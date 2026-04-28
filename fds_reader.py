@@ -1,37 +1,57 @@
-#Subrotina responsável por abrir e rodar as simulações FDS
-import subprocess
+# Subrotina responsável por preparar o ambiente e ler o arquivo FDS
 import os
-import time
 import shutil
+import logging
 
-def preparar_ambiente_fds(diretorio_base_fds, pasta_projeto):
-    """Copia o executável, DLLs e o mpiexec para a pasta do projeto."""
-    pastas_para_buscar = [diretorio_base_fds, os.path.join(diretorio_base_fds, "mpi")]
+logger = logging.getLogger(__name__)
+
+
+def preparar_ambiente_fds(diretorio_base_fds: str, pasta_projeto: str) -> None:
+    """
+    Copia executáveis, DLLs e mpiexec para a pasta do projeto.
+    Arquivos já existentes na pasta de destino são ignorados (evita
+    sobrescrever arquivos idênticos desnecessariamente).
+    """
+    pastas_para_buscar = [
+        diretorio_base_fds,
+        os.path.join(diretorio_base_fds, "mpi"),
+    ]
+
+    copiados = 0
     for pasta in pastas_para_buscar:
-        if os.path.exists(pasta):
-            for item in os.listdir(pasta):
-                if item.lower().endswith(('.exe', '.dll')):
-                    shutil.copy2(os.path.join(pasta, item), os.path.join(pasta_projeto, item))
+        if not os.path.exists(pasta):
+            logger.warning(f"Pasta não encontrada, pulando: {pasta}")
+            continue
+        for item in os.listdir(pasta):
+            if item.lower().endswith(('.exe', '.dll')):
+                origem = os.path.join(pasta, item)
+                destino = os.path.join(pasta_projeto, item)
+                if not os.path.exists(destino):
+                    shutil.copy2(origem, destino)
+                    logger.debug(f"Copiado: {item}")
+                    copiados += 1
 
-def contar_meshes(caminho_arquivo):
+    if copiados > 0:
+        logger.info(f"{copiados} arquivo(s) copiado(s) para a pasta do projeto.")
+    else:
+        logger.info("Binários FDS já presentes na pasta do projeto. Nenhuma cópia necessária.")
+
+
+def contar_meshes(caminho_arquivo: str) -> int:
     """
     Lê o arquivo .fds e conta quantas linhas começam com &MESH.
+    Retorna 0 se o arquivo não for encontrado.
     """
     if not os.path.exists(caminho_arquivo):
-        print(f"[ERRO] Arquivo não encontrado: {caminho_arquivo}")
+        logger.error(f"Arquivo não encontrado: {caminho_arquivo}")
         return 0
 
     contador = 0
-    
-    # Abrimos o arquivo para leitura ('r') com codificação latin-1 
-    # (comum em arquivos gerados por softwares de engenharia)
+    # Codificação latin-1 é comum em arquivos gerados por softwares de engenharia
     with open(caminho_arquivo, 'r', encoding='latin-1') as f:
         for linha in f:
-            # Remove espaços em branco e transforma em maiúsculas para não errar
-            linha_limpa = linha.strip().upper()
-            
-            # Se a linha começa com &MESH, incrementamos o contador
-            if linha_limpa.startswith('&MESH'):
+            if linha.strip().upper().startswith('&MESH'):
                 contador += 1
-                
+
+    logger.info(f"Meshes detectadas no arquivo FDS: {contador}")
     return contador

@@ -1,0 +1,21 @@
+# ============================================================
+#  PAINEL DE CONTROLE - Configurações da Simulação FDS
+# ============================================================
+
+# Caminho do arquivo .fds a ser simulado
+arquivo_fds: "C:/Users/Aluga.com/Documents/Programas/Pyrosim teste/FDS/Pyrosim.fds"
+
+# Diretório de instalação do FDS/PyroSim (onde estão os .exe e .dll)
+diretorio_fds: "C:/Program Files/PyroSim 2023/fds"
+
+# Modo de execução: SERIAL | OPENMP | MPI | HYBRID
+modo: "OPENMP"
+
+# Número de threads (OPENMP) ou processos MPI (MPI)
+num_cores: 20
+
+# Apenas para o modo HYBRID (MPI + OpenMP)
+# Total de núcleos = mpi_procs * omp_threads
+hybrid:
+  mpi_procs: 4
+  omp_threads: 5
