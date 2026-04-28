@@ -1,47 +1,52 @@
 # ============================================================
-#  FDS Automation v1.12 — Painel de Controle
+#  FDS Automation v1.13 — Painel de Controle
 # ============================================================
 
 # ----------------------------------------------------------
-# OPÇÃO A — Simulação única
+# MODO DE SELEÇÃO DE ARQUIVOS (escolha apenas uma opção)
+#
+#  Opção A — Pasta: detecta todos os .fds automaticamente
+#  Opção B — Lista manual de arquivos
+#  Opção C — Arquivo único
+#
+# Prioridade: pasta_simulacoes > simulacoes > arquivo_fds
 # ----------------------------------------------------------
-# arquivo_fds: "C:/Users/Aluga.com/Documents/Programas/Pyrosim teste/FDS/Pyrosim.fds"
+
+# Opção A (RECOMENDADA): aponte para a pasta com os arquivos .fds
+pasta_simulacoes: "C:/Users/Aluga.com/Documents/Programas/Pyrosim teste/FDS"
+
+# Opção B: lista manual (comente 'pasta_simulacoes' para usar)
+# simulacoes:
+#   - "C:/Projetos/FDS/Caso_01.fds"
+#   - "C:/Projetos/FDS/Caso_02.fds"
+
+# Opção C: arquivo único (comente as anteriores para usar)
+# arquivo_fds: "C:/Projetos/FDS/Pyrosim.fds"
 
 # ----------------------------------------------------------
-# OPÇÃO B — Fila de simulações sequenciais
-#   As simulações são executadas na ordem listada.
+# INSTALAÇÃO DO FDS
 # ----------------------------------------------------------
-simulacoes:
-  - "C:/Users/Aluga.com/Documents/Programas/Pyrosim teste/FDS/Caso_01.fds"
-  - "C:/Users/Aluga.com/Documents/Programas/Pyrosim teste/FDS/Caso_02.fds"
-  # adicione quantos casos quiser...
-
-# Diretório de instalação do FDS/PyroSim (onde estão os .exe e .dll)
 diretorio_fds: "C:/Program Files/PyroSim 2023/fds"
 
+# ----------------------------------------------------------
+# PARALELISMO
+# ----------------------------------------------------------
 # Modo de execução: SERIAL | OPENMP | MPI | HYBRID
 modo: "OPENMP"
 
 # Número de threads (OPENMP) ou processos MPI (MPI)
 num_cores: 20
 
-# Apenas para o modo HYBRID (MPI + OpenMP)
-# Total de núcleos = mpi_procs * omp_threads
+# Apenas para o modo HYBRID — total = mpi_procs × omp_threads
 hybrid:
   mpi_procs: 4
   omp_threads: 5
 
 # ----------------------------------------------------------
-# OPÇÕES DE PERFORMANCE
-#   Todas ativas por padrão (true). Desative com false
-#   caso encontre instabilidade.
+# PERFORMANCE
+# Desative com false caso encontre instabilidade.
 # ----------------------------------------------------------
 performance:
-  # Fixa cada thread OpenMP a um núcleo físico (reduz troca de contexto)
-  kmp_affinity: true
-
-  # Mantém threads em spin-wait (elimina latência de wake-up)
-  omp_spin: true
-
-  # Otimização de acesso NUMA (importante em CPUs multi-socket)
-  numa_opt: true
+  kmp_affinity: true   # Fixa threads a núcleos físicos
+  omp_spin:     true   # Threads em spin-wait (menos latência)
+  numa_opt:     true   # Otimização NUMA (CPUs multi-socket)

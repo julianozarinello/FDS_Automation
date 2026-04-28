@@ -1,6 +1,6 @@
-# FDS Automation v1.12
+# FDS Automation v1.13
 
-Gerenciador de simulações [Fire Dynamics Simulator (FDS)](https://pages.nist.gov/fds-smv/) em Python, com suporte a fila sequencial de simulações, múltiplos modos de paralelismo e otimizações de performance.
+Gerenciador de simulações [Fire Dynamics Simulator (FDS)](https://pages.nist.gov/fds-smv/) em Python, com auto-descoberta de arquivos, fila sequencial e otimizações de performance.
 
 ## Requisitos
 
@@ -12,7 +12,7 @@ pip install pyyaml psutil
 
 ## Como usar
 
-1. Edite o `config.yaml` com os caminhos e configurações.
+1. Edite o `config.yaml` com o caminho da pasta e as configurações.
 2. Execute:
 
 ```bash
@@ -21,20 +21,31 @@ python main.py
 python main.py --config meu_caso.yaml
 ```
 
-Um arquivo `fds_run.log` é gerado automaticamente na pasta do projeto.
+Um arquivo `fds_run.log` é gerado automaticamente na pasta das simulações.
 
-## Fila de simulações
+## Seleção de arquivos (3 opções)
 
-Para rodar múltiplos casos em sequência, use a chave `simulacoes` no `config.yaml`:
+Escolha **uma** das opções no `config.yaml`:
 
+### Opção A — Pasta (recomendada)
+Aponte para a pasta com os arquivos `.fds`. O programa detecta e ordena todos automaticamente:
+```yaml
+pasta_simulacoes: "C:/Projetos/FDS"
+```
+
+### Opção B — Lista manual
 ```yaml
 simulacoes:
   - "C:/Projetos/FDS/Caso_01.fds"
   - "C:/Projetos/FDS/Caso_02.fds"
-  - "C:/Projetos/FDS/Caso_03.fds"
 ```
 
-Ao final da fila, um relatório consolidado é exibido com o tempo de cada simulação e o tempo total.
+### Opção C — Arquivo único
+```yaml
+arquivo_fds: "C:/Projetos/FDS/Pyrosim.fds"
+```
+
+> **Prioridade:** `pasta_simulacoes` > `simulacoes` > `arquivo_fds`
 
 ## Modos de execução
 
@@ -45,7 +56,7 @@ Ao final da fila, um relatório consolidado é exibido com o tempo de cada simul
 | `MPI` | Múltiplos processos (1 por mesh recomendado) |
 | `HYBRID` | Combinação de processos MPI com threads OpenMP |
 
-## Otimizações de performance (v1.12)
+## Otimizações de performance
 
 | Otimização | Descrição |
 |---|---|
@@ -58,7 +69,7 @@ Ao final da fila, um relatório consolidado é exibido com o tempo de cada simul
 
 ## Relatório final
 
-Exemplo de saída ao final de uma fila com 3 simulações:
+Exemplo de saída ao final de uma fila:
 
 ```
 =======================================================

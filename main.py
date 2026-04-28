@@ -1,16 +1,16 @@
-# FDS Automation v1.12
+# FDS Automation v1.13
 import os
 import subprocess
 import time
 import logging
 import argparse
 
-import yaml   # pip install pyyaml
-import psutil # pip install psutil
+import yaml    # pip install pyyaml
+import psutil  # pip install psutil
 
 from fds_reader import preparar_ambiente_fds, contar_meshes
 
-VERSAO = "1.12"
+VERSAO = "1.13"
 
 
 # ---------------------------------------------------------------------------
@@ -43,29 +43,53 @@ def carregar_config(caminho_config: str) -> dict:
         return yaml.safe_load(f)
 
 
-def normalizar_lista_simulacoes(cfg: dict) -> list[str]:
+def descobrir_simulacoes(cfg: dict) -> list[str]:
     """
-    Retorna sempre uma lista de caminhos .fds.
-    Aceita tanto 'arquivo_fds' (string única) quanto 'simulacoes' (lista).
+    Retorna uma lista ordenada de caminhos .fds.
+    Prioridade: pasta_simulacoes > simulacoes > arquivo_fds
     """
+    logger = logging.getLogger(__name__)
+
+    # Opção A: varrer pasta automaticamente
+    if "pasta_simulacoes" in cfg and cfg["pasta_simulacoes"]:
+        pasta = str(cfg["pasta_simulacoes"])
+        if not os.path.isdir(pasta):
+            raise FileNotFoundError(f"Pasta não encontrada: {pasta}")
+
+        arquivos = sorted(
+            os.path.join(pasta, f)
+            for f in os.listdir(pasta)
+            if f.lower().endswith(".fds")
+        )
+
+        if not arquivos:
+            raise FileNotFoundError(f"Nenhum arquivo .fds encontrado em: {pasta}")
+
+        logger.info(f"{len(arquivos)} arquivo(s) .fds encontrado(s) em '{pasta}':")
+        for arq in arquivos:
+            logger.info(f"  ‣ {os.path.basename(arq)}")
+        return arquivos
+
+    # Opção B: lista manual
     if "simulacoes" in cfg and cfg["simulacoes"]:
         return [str(p) for p in cfg["simulacoes"]]
+
+    # Opção C: arquivo único
     if "arquivo_fds" in cfg and cfg["arquivo_fds"]:
         return [str(cfg["arquivo_fds"])]
-    raise ValueError("Nenhum arquivo FDS definido. Use 'arquivo_fds' ou 'simulacoes' no config.yaml.")
+
+    raise ValueError(
+        "Nenhuma fonte de arquivos FDS definida.\n"
+        "Use 'pasta_simulacoes', 'simulacoes' ou 'arquivo_fds' no config.yaml."
+    )
 
 
 # ---------------------------------------------------------------------------
 # Variáveis de ambiente para performance
 # ---------------------------------------------------------------------------
 def aplicar_variaveis_performance(cfg: dict, modo: str) -> None:
-    """
-    Define variáveis de ambiente que melhoram o desempenho de execuções
-    OpenMP e MPI antes de lançar o processo FDS.
-    """
     perf = cfg.get("performance", {})
 
-    # Número de threads OpenMP
     if modo == "OPENMP":
         os.environ["OMP_NUM_THREADS"] = str(cfg["num_cores"])
     elif modo == "HYBRID":
@@ -73,20 +97,15 @@ def aplicar_variaveis_performance(cfg: dict, modo: str) -> None:
     else:
         os.environ["OMP_NUM_THREADS"] = "1"
 
-    # Afinidade de threads Intel MKL/OpenMP: threads ficam nos núcleos físicos
-    # evita migração de thread entre núcleos (reduz latência de cache)
     if perf.get("kmp_affinity", True):
-        os.environ["KMP_AFFINITY"]    = "granularity=fine,compact,1,0"
-        os.environ["OMP_PROC_BIND"]   = "close"
+        os.environ["KMP_AFFINITY"]  = "granularity=fine,compact,1,0"
+        os.environ["OMP_PROC_BIND"] = "close"
 
-    # Mantém threads em spin-wait por mais tempo antes de dormir
-    # (elimina latência de wake-up em iterações rápidas)
     if perf.get("omp_spin", True):
         os.environ["GOMP_SPINCOUNT"]  = "10000000"
         os.environ["OMP_WAIT_POLICY"] = "active"
-        os.environ["KMP_BLOCKTIME"]   = "200"  # ms
+        os.environ["KMP_BLOCKTIME"]   = "200"
 
-    # Desativa alocação NUMA não-local (evita acesso cross-socket)
     if perf.get("numa_opt", True):
         os.environ["OMP_PLACES"] = "cores"
 
@@ -95,21 +114,18 @@ def aplicar_variaveis_performance(cfg: dict, modo: str) -> None:
 # Prioridade de processo
 # ---------------------------------------------------------------------------
 def elevar_prioridade() -> None:
-    """Eleva a prioridade do processo Python (e consequentemente do FDS)
-    para HIGH no Windows, reduzindo interferência de outros processos."""
     logger = logging.getLogger(__name__)
     try:
         proc = psutil.Process(os.getpid())
-        proc.nice(psutil.HIGH_PRIORITY_CLASS)  # Windows
+        proc.nice(psutil.HIGH_PRIORITY_CLASS)
         logger.info("Prioridade de processo elevada para HIGH.")
     except (AttributeError, psutil.AccessDenied):
         try:
-            proc.nice(-10)  # Linux/macOS fallback
+            psutil.Process(os.getpid()).nice(-10)
             logger.info("Prioridade de processo elevada (nice -10).")
         except psutil.AccessDenied:
             logger.warning(
-                "Não foi possível elevar a prioridade (execute como Administrador "
-                "para habilitar esta otimização)."
+                "Não foi possível elevar a prioridade — execute como Administrador."
             )
 
 
@@ -122,17 +138,15 @@ def validar_simulacao(arquivo_fds: str, cfg: dict) -> None:
     if not os.path.exists(arquivo_fds):
         raise FileNotFoundError(f"Arquivo FDS não encontrado: {arquivo_fds}")
 
-    diretorio_fds = cfg["diretorio_fds"]
-    if not os.path.exists(diretorio_fds):
+    if not os.path.exists(cfg["diretorio_fds"]):
         raise FileNotFoundError(
-            f"Diretório do FDS não encontrado: {diretorio_fds}\n"
+            f"Diretório do FDS não encontrado: {cfg['diretorio_fds']}\n"
             "Verifique o campo 'diretorio_fds' no config.yaml."
         )
 
     modo = cfg["modo"].upper()
-    modos_validos = {"SERIAL", "OPENMP", "MPI", "HYBRID"}
-    if modo not in modos_validos:
-        raise ValueError(f"Modo inválido: '{modo}'. Escolha entre: {modos_validos}")
+    if modo not in {"SERIAL", "OPENMP", "MPI", "HYBRID"}:
+        raise ValueError(f"Modo inválido: '{modo}'.")
 
     if modo in ("MPI", "HYBRID"):
         n_meshes = contar_meshes(arquivo_fds)
@@ -161,7 +175,6 @@ def construir_comando(cfg: dict, pasta_projeto: str, nome_fds: str) -> tuple[lis
 
     elif modo == "MPI":
         n = cfg["num_cores"]
-        # -bind-to core: cada processo MPI é fixado a um núcleo físico
         status = f"MPI | {n} processo(s)"
         return [mpiexec, "-n", str(n), "-bind-to", "core", fds_exe, nome_fds], status
 
@@ -186,14 +199,10 @@ def construir_comando(cfg: dict, pasta_projeto: str, nome_fds: str) -> tuple[lis
 # Execução de uma simulação
 # ---------------------------------------------------------------------------
 def executar_simulacao(arquivo_fds: str, cfg: dict, idx: int, total: int) -> float:
-    """
-    Valida, prepara e executa uma simulação FDS.
-    Retorna o tempo decorrido em segundos (ou -1 se falhou).
-    """
-    logger       = logging.getLogger(__name__)
-    pasta        = os.path.dirname(arquivo_fds)
-    nome_fds     = os.path.basename(arquivo_fds)
-    modo         = cfg["modo"].upper()
+    logger   = logging.getLogger(__name__)
+    pasta    = os.path.dirname(arquivo_fds)
+    nome_fds = os.path.basename(arquivo_fds)
+    modo     = cfg["modo"].upper()
 
     logger.info("=" * 55)
     logger.info(f"  SIMULAÇÃO {idx}/{total}: {nome_fds}")
@@ -204,8 +213,8 @@ def executar_simulacao(arquivo_fds: str, cfg: dict, idx: int, total: int) -> flo
     aplicar_variaveis_performance(cfg, modo)
 
     comando, status_msg = construir_comando(cfg, pasta, nome_fds)
-    logger.info(f"Modo        : {status_msg}")
-    logger.info(f"Pasta       : {pasta}")
+    logger.info(f"Modo  : {status_msg}")
+    logger.info(f"Pasta : {pasta}")
     logger.info("-" * 55)
 
     inicio = time.time()
@@ -223,13 +232,13 @@ def executar_simulacao(arquivo_fds: str, cfg: dict, idx: int, total: int) -> flo
         logger.error(f"[ERRO] FDS encerrou com código {e.returncode} após {elapsed:.1f}s.")
     except KeyboardInterrupt:
         logger.warning("Simulação interrompida pelo usuário.")
-        raise  # propaga para interromper a fila também
+        raise
 
     return -1.0
 
 
 # ---------------------------------------------------------------------------
-# Relatório final da fila
+# Relatório final
 # ---------------------------------------------------------------------------
 def imprimir_relatorio(resultados: list[tuple[str, float]]) -> None:
     logger = logging.getLogger(__name__)
@@ -241,8 +250,7 @@ def imprimir_relatorio(resultados: list[tuple[str, float]]) -> None:
     total_seg = 0.0
     for nome, elapsed in resultados:
         if elapsed < 0:
-            status = "FALHOU"
-            tempo  = "--"
+            status, tempo = "FALHOU", "--"
         else:
             h = int(elapsed // 3600)
             m = int((elapsed % 3600) // 60)
@@ -274,15 +282,24 @@ def main():
     )
     args = parser.parse_args()
 
-    cfg         = carregar_config(args.config)
-    simulacoes  = normalizar_lista_simulacoes(cfg)
-    pasta_log   = os.path.dirname(simulacoes[0])
+    cfg = carregar_config(args.config)
 
+    # Descoberta das simulações (precisa de logging, usa pasta da config)
+    pasta_log = (
+        str(cfg["pasta_simulacoes"])
+        if "pasta_simulacoes" in cfg and cfg["pasta_simulacoes"]
+        else os.path.dirname(
+            str((cfg.get("simulacoes") or [cfg.get("arquivo_fds", ".")])[0])
+        )
+    )
     configurar_logging(pasta_log)
     logger = logging.getLogger(__name__)
 
     logger.info(f"FDS Automation v{VERSAO}")
-    logger.info(f"{len(simulacoes)} simulação(ões) na fila | Modo: {cfg['modo'].upper()}")
+    logger.info(f"Modo: {cfg['modo'].upper()}")
+
+    simulacoes = descobrir_simulacoes(cfg)
+    logger.info(f"Total de simulações na fila: {len(simulacoes)}")
 
     elevar_prioridade()
 
