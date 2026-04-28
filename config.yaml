@@ -1,9 +1,20 @@
 # ============================================================
-#  PAINEL DE CONTROLE - Configurações da Simulação FDS
+#  FDS Automation v1.12 — Painel de Controle
 # ============================================================
 
-# Caminho do arquivo .fds a ser simulado
-arquivo_fds: "C:/Users/Aluga.com/Documents/Programas/Pyrosim teste/FDS/Pyrosim.fds"
+# ----------------------------------------------------------
+# OPÇÃO A — Simulação única
+# ----------------------------------------------------------
+# arquivo_fds: "C:/Users/Aluga.com/Documents/Programas/Pyrosim teste/FDS/Pyrosim.fds"
+
+# ----------------------------------------------------------
+# OPÇÃO B — Fila de simulações sequenciais
+#   As simulações são executadas na ordem listada.
+# ----------------------------------------------------------
+simulacoes:
+  - "C:/Users/Aluga.com/Documents/Programas/Pyrosim teste/FDS/Caso_01.fds"
+  - "C:/Users/Aluga.com/Documents/Programas/Pyrosim teste/FDS/Caso_02.fds"
+  # adicione quantos casos quiser...
 
 # Diretório de instalação do FDS/PyroSim (onde estão os .exe e .dll)
 diretorio_fds: "C:/Program Files/PyroSim 2023/fds"
@@ -19,3 +30,18 @@ num_cores: 20
 hybrid:
   mpi_procs: 4
   omp_threads: 5
+
+# ----------------------------------------------------------
+# OPÇÕES DE PERFORMANCE
+#   Todas ativas por padrão (true). Desative com false
+#   caso encontre instabilidade.
+# ----------------------------------------------------------
+performance:
+  # Fixa cada thread OpenMP a um núcleo físico (reduz troca de contexto)
+  kmp_affinity: true
+
+  # Mantém threads em spin-wait (elimina latência de wake-up)
+  omp_spin: true
+
+  # Otimização de acesso NUMA (importante em CPUs multi-socket)
+  numa_opt: true

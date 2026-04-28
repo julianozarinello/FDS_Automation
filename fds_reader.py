@@ -9,8 +9,7 @@ logger = logging.getLogger(__name__)
 def preparar_ambiente_fds(diretorio_base_fds: str, pasta_projeto: str) -> None:
     """
     Copia executáveis, DLLs e mpiexec para a pasta do projeto.
-    Arquivos já existentes na pasta de destino são ignorados (evita
-    sobrescrever arquivos idênticos desnecessariamente).
+    Arquivos já existentes na pasta de destino são ignorados.
     """
     pastas_para_buscar = [
         diretorio_base_fds,
@@ -24,7 +23,7 @@ def preparar_ambiente_fds(diretorio_base_fds: str, pasta_projeto: str) -> None:
             continue
         for item in os.listdir(pasta):
             if item.lower().endswith(('.exe', '.dll')):
-                origem = os.path.join(pasta, item)
+                origem  = os.path.join(pasta, item)
                 destino = os.path.join(pasta_projeto, item)
                 if not os.path.exists(destino):
                     shutil.copy2(origem, destino)
@@ -34,7 +33,7 @@ def preparar_ambiente_fds(diretorio_base_fds: str, pasta_projeto: str) -> None:
     if copiados > 0:
         logger.info(f"{copiados} arquivo(s) copiado(s) para a pasta do projeto.")
     else:
-        logger.info("Binários FDS já presentes na pasta do projeto. Nenhuma cópia necessária.")
+        logger.info("Binários FDS já presentes. Nenhuma cópia necessária.")
 
 
 def contar_meshes(caminho_arquivo: str) -> int:
@@ -47,11 +46,10 @@ def contar_meshes(caminho_arquivo: str) -> int:
         return 0
 
     contador = 0
-    # Codificação latin-1 é comum em arquivos gerados por softwares de engenharia
     with open(caminho_arquivo, 'r', encoding='latin-1') as f:
         for linha in f:
             if linha.strip().upper().startswith('&MESH'):
                 contador += 1
 
-    logger.info(f"Meshes detectadas no arquivo FDS: {contador}")
+    logger.info(f"Meshes detectadas: {contador}")
     return contador
