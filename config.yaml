@@ -1,5 +1,5 @@
 # ============================================================
-#  FDS Automation v1.13 — Painel de Controle
+#  FDS Automation v1.14 — Painel de Controle
 # ============================================================
 
 # ----------------------------------------------------------
@@ -29,7 +29,15 @@ pasta_simulacoes: "C:/Users/Aluga.com/Documents/Programas/Pyrosim teste/FDS"
 diretorio_fds: "C:/Program Files/PyroSim 2023/fds"
 
 # ----------------------------------------------------------
-# PARALELISMO
+# AUTO-CONFIGURAÇÃO DE HARDWARE
+# ----------------------------------------------------------
+# Se true, detecta CPUs físicos, meshes e escolhe modo/núcleos
+# automaticamente. Os campos abaixo (modo, num_cores, hybrid)
+# são usados apenas quando auto_config: false.
+auto_config: true
+
+# ----------------------------------------------------------
+# PARALELISMO MANUAL (ignorado se auto_config: true)
 # ----------------------------------------------------------
 # Modo de execução: SERIAL | OPENMP | MPI | HYBRID
 modo: "OPENMP"

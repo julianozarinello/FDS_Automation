@@ -1,4 +1,4 @@
-# FDS Automation v1.13
+# FDS Automation v1.14
 import os
 import subprocess
 import time
@@ -9,8 +9,9 @@ import yaml    # pip install pyyaml
 import psutil  # pip install psutil
 
 from fds_reader import preparar_ambiente_fds, contar_meshes
+from hw_detector import detectar_hardware, recomendar_config, logar_hardware
 
-VERSAO = "1.13"
+VERSAO = "1.14"
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +51,6 @@ def descobrir_simulacoes(cfg: dict) -> list[str]:
     """
     logger = logging.getLogger(__name__)
 
-    # Opção A: varrer pasta automaticamente
     if "pasta_simulacoes" in cfg and cfg["pasta_simulacoes"]:
         pasta = str(cfg["pasta_simulacoes"])
         if not os.path.isdir(pasta):
@@ -70,11 +70,9 @@ def descobrir_simulacoes(cfg: dict) -> list[str]:
             logger.info(f"  ‣ {os.path.basename(arq)}")
         return arquivos
 
-    # Opção B: lista manual
     if "simulacoes" in cfg and cfg["simulacoes"]:
         return [str(p) for p in cfg["simulacoes"]]
 
-    # Opção C: arquivo único
     if "arquivo_fds" in cfg and cfg["arquivo_fds"]:
         return [str(cfg["arquivo_fds"])]
 
@@ -82,6 +80,29 @@ def descobrir_simulacoes(cfg: dict) -> list[str]:
         "Nenhuma fonte de arquivos FDS definida.\n"
         "Use 'pasta_simulacoes', 'simulacoes' ou 'arquivo_fds' no config.yaml."
     )
+
+
+# ---------------------------------------------------------------------------
+# Auto-configuração por hardware
+# ---------------------------------------------------------------------------
+def aplicar_autoconfig(cfg: dict, arquivo_fds: str) -> dict:
+    """
+    Se 'auto_config: true' no config.yaml, detecta o hardware e sobrescreve
+    modo/num_cores/hybrid com a configuração recomendada para o arquivo .fds.
+    Retorna o cfg (possivelmente modificado).
+    """
+    if not cfg.get("auto_config", False):
+        return cfg
+
+    hw       = detectar_hardware()
+    n_meshes = contar_meshes(arquivo_fds)
+    rec      = recomendar_config(hw, n_meshes)
+    logar_hardware(hw, rec)
+
+    cfg["modo"]      = rec["modo"]
+    cfg["num_cores"] = rec["num_cores"]
+    cfg["hybrid"]    = rec["hybrid"]
+    return cfg
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +129,17 @@ def aplicar_variaveis_performance(cfg: dict, modo: str) -> None:
 
     if perf.get("numa_opt", True):
         os.environ["OMP_PLACES"] = "cores"
+
+    # Evita conflito entre MKL e OpenMP (crítico para Intel Fortran)
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["MKL_DYNAMIC"]     = "FALSE"
+    os.environ["OMP_DYNAMIC"]     = "FALSE"
+    os.environ["OMP_DISPLAY_ENV"] = "FALSE"
+
+    # Intel MPI pin (modo MPI/HYBRID)
+    if modo in ("MPI", "HYBRID"):
+        os.environ["I_MPI_PIN"]       = "1"
+        os.environ["I_MPI_PIN_ORDER"] = "compact"
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +208,13 @@ def construir_comando(cfg: dict, pasta_projeto: str, nome_fds: str) -> tuple[lis
     elif modo == "MPI":
         n = cfg["num_cores"]
         status = f"MPI | {n} processo(s)"
-        return [mpiexec, "-n", str(n), "-bind-to", "core", fds_exe, nome_fds], status
+        return (
+            [mpiexec, "-n", str(n),
+             "-genv", "I_MPI_PIN", "1",
+             "-genv", "I_MPI_PIN_ORDER", "compact",
+             "-bind-to", "core", fds_exe, nome_fds],
+            status,
+        )
 
     elif modo == "HYBRID":
         mpi_procs   = cfg["hybrid"]["mpi_procs"]
@@ -186,8 +224,11 @@ def construir_comando(cfg: dict, pasta_projeto: str, nome_fds: str) -> tuple[lis
             f"= {mpi_procs * omp_threads} núcleo(s)"
         )
         return (
-            [mpiexec, "-n", str(mpi_procs), "-bind-to", "core",
-             "-map-by", f"socket:PE={omp_threads}", fds_exe, nome_fds],
+            [mpiexec, "-n", str(mpi_procs),
+             "-genv", "I_MPI_PIN", "1",
+             "-genv", "I_MPI_PIN_DOMAIN", f"omp:{omp_threads}",
+             "-genv", "I_MPI_PIN_ORDER", "compact",
+             fds_exe, nome_fds],
             status,
         )
 
@@ -202,11 +243,14 @@ def executar_simulacao(arquivo_fds: str, cfg: dict, idx: int, total: int) -> flo
     logger   = logging.getLogger(__name__)
     pasta    = os.path.dirname(arquivo_fds)
     nome_fds = os.path.basename(arquivo_fds)
-    modo     = cfg["modo"].upper()
 
     logger.info("=" * 55)
     logger.info(f"  SIMULAÇÃO {idx}/{total}: {nome_fds}")
     logger.info("=" * 55)
+
+    # Auto-configuração por hardware (por simulação, pois meshes podem variar)
+    cfg = aplicar_autoconfig(cfg, arquivo_fds)
+    modo = cfg["modo"].upper()
 
     validar_simulacao(arquivo_fds, cfg)
     preparar_ambiente_fds(cfg["diretorio_fds"], pasta)
@@ -219,7 +263,15 @@ def executar_simulacao(arquivo_fds: str, cfg: dict, idx: int, total: int) -> flo
 
     inicio = time.time()
     try:
-        subprocess.run(comando, cwd=pasta, check=True)
+        creationflags = 0
+        if hasattr(subprocess, 'HIGH_PRIORITY_CLASS'):
+            creationflags = subprocess.HIGH_PRIORITY_CLASS
+
+        subprocess.run(
+            comando, cwd=pasta, check=True,
+            stdin=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
         elapsed = time.time() - inicio
         h, m, s = int(elapsed//3600), int((elapsed%3600)//60), int(elapsed%60)
         logger.info(f"[SUCESSO] {nome_fds} — {h:02d}h {m:02d}m {s:02d}s")
@@ -284,7 +336,6 @@ def main():
 
     cfg = carregar_config(args.config)
 
-    # Descoberta das simulações (precisa de logging, usa pasta da config)
     pasta_log = (
         str(cfg["pasta_simulacoes"])
         if "pasta_simulacoes" in cfg and cfg["pasta_simulacoes"]
@@ -296,7 +347,12 @@ def main():
     logger = logging.getLogger(__name__)
 
     logger.info(f"FDS Automation v{VERSAO}")
-    logger.info(f"Modo: {cfg['modo'].upper()}")
+
+    # Se auto_config estiver desabilitado, loga o modo manual escolhido
+    if not cfg.get("auto_config", False):
+        logger.info(f"Modo manual: {cfg['modo'].upper()}")
+    else:
+        logger.info("Auto-config ATIVADO — hardware será detectado por simulação.")
 
     simulacoes = descobrir_simulacoes(cfg)
     logger.info(f"Total de simulações na fila: {len(simulacoes)}")
