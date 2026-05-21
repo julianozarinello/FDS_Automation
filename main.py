@@ -1,4 +1,4 @@
-# FDS Automation v1.14
+# FDS Automation v1.15
 import os
 import subprocess
 import time
@@ -8,10 +8,11 @@ import argparse
 import yaml    # pip install pyyaml
 import psutil  # pip install psutil
 
-from fds_reader import preparar_ambiente_fds, contar_meshes
-from hw_detector import detectar_hardware, recomendar_config, logar_hardware
+from fds_reader   import preparar_ambiente_fds, contar_meshes
+from hw_detector  import detectar_hardware, recomendar_config, logar_hardware
+from mesh_splitter import processar_meshes
 
-VERSAO = "1.14"
+VERSAO = "1.15"
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +104,34 @@ def aplicar_autoconfig(cfg: dict, arquivo_fds: str) -> dict:
     cfg["num_cores"] = rec["num_cores"]
     cfg["hybrid"]    = rec["hybrid"]
     return cfg
+
+
+# ---------------------------------------------------------------------------
+# Mesh Splitter — divisão e reordenação de meshes
+# ---------------------------------------------------------------------------
+def aplicar_mesh_splitter(cfg: dict, arquivo_fds: str) -> None:
+    """
+    Se 'mesh_splitter.ativo: true' no config.yaml, divide e reordena as
+    meshes do arquivo .fds antes de rodar o FDS.
+    Cria backup automático (.fds.bak) antes de qualquer modificação.
+    """
+    ms_cfg = cfg.get("mesh_splitter", {})
+    if not ms_cfg.get("ativo", False):
+        return
+
+    modo = cfg["modo"].upper()
+    if modo not in ("MPI", "HYBRID"):
+        logger = logging.getLogger(__name__)
+        logger.info("Mesh Splitter ignorado (modo não é MPI/HYBRID).")
+        return
+
+    n_cores    = (
+        cfg["hybrid"]["mpi_procs"] if modo == "HYBRID" else cfg["num_cores"]
+    )
+    margem_pct = float(ms_cfg.get("margem_pct", 10.0))
+    dry_run    = bool(ms_cfg.get("dry_run",    False))
+
+    processar_meshes(arquivo_fds, n_cores, margem_pct, dry_run)
 
 
 # ---------------------------------------------------------------------------
@@ -248,10 +277,14 @@ def executar_simulacao(arquivo_fds: str, cfg: dict, idx: int, total: int) -> flo
     logger.info(f"  SIMULAÇÃO {idx}/{total}: {nome_fds}")
     logger.info("=" * 55)
 
-    # Auto-configuração por hardware (por simulação, pois meshes podem variar)
+    # 1. Auto-configuração por hardware
     cfg = aplicar_autoconfig(cfg, arquivo_fds)
     modo = cfg["modo"].upper()
 
+    # 2. Mesh Splitter (divide + reordena meshes antes de rodar)
+    aplicar_mesh_splitter(cfg, arquivo_fds)
+
+    # 3. Validação, preparação e execução
     validar_simulacao(arquivo_fds, cfg)
     preparar_ambiente_fds(cfg["diretorio_fds"], pasta)
     aplicar_variaveis_performance(cfg, modo)
@@ -348,7 +381,6 @@ def main():
 
     logger.info(f"FDS Automation v{VERSAO}")
 
-    # Se auto_config estiver desabilitado, loga o modo manual escolhido
     if not cfg.get("auto_config", False):
         logger.info(f"Modo manual: {cfg['modo'].upper()}")
     else:

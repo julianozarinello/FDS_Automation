@@ -1,5 +1,5 @@
 # ============================================================
-#  FDS Automation v1.14 — Painel de Controle
+#  FDS Automation v1.15 — Painel de Controle
 # ============================================================
 
 # ----------------------------------------------------------
@@ -49,6 +49,17 @@ num_cores: 20
 hybrid:
   mpi_procs: 4
   omp_threads: 5
+
+# ----------------------------------------------------------
+# MESH SPLITTER
+# Divide e reordena meshes automaticamente antes de rodar.
+# Ativo apenas nos modos MPI e HYBRID.
+# O arquivo original é preservado em um backup (.fds.bak).
+# ----------------------------------------------------------
+mesh_splitter:
+  ativo:      false    # mude para true para ativar
+  margem_pct: 10.0     # % máximo de desequilíbrio de células entre núcleos
+  dry_run:    false    # true = apenas loga, NÃO modifica o arquivo
 
 # ----------------------------------------------------------
 # PERFORMANCE
