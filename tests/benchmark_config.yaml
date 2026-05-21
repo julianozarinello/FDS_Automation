@@ -1,0 +1,73 @@
+# ============================================================
+#  FDS Automation — Benchmark Config
+#  Configuração exclusiva para a suíte de benchmark isolada.
+#  NÃO interfere com o main.py nem altera arquivos .fds originais.
+# ============================================================
+
+benchmark:
+
+  # ----------------------------------------------------------
+  # ARQUIVOS A TESTAR
+  # Mesma lógica do config.yaml: pasta > lista > arquivo único
+  # Recomenda-se usar 1 a 3 casos representativos.
+  # ----------------------------------------------------------
+  pasta_simulacoes: "C:/Programas/FDS_Automation/AURORA - FDS"
+
+  # simulacoes:
+  #   - "C:/Projetos/FDS/Caso_01.fds"
+  #   - "C:/Projetos/FDS/Caso_02.fds"
+
+  # arquivo_fds: "C:/Projetos/FDS/Pyrosim.fds"
+
+  # ----------------------------------------------------------
+  # INSTALAÇÃO DO FDS
+  # ----------------------------------------------------------
+  diretorio_fds: "C:/Program Files/firemodels/FDS6/bin"
+
+  # ----------------------------------------------------------
+  # TEMPO DE TESTE POR CANDIDATO (segundos)
+  # Cada configuração roda por este tempo em cópia temporária.
+  # Recomendado: 60-120s para resultados confiáveis.
+  # Mínimo útil: 30s (resultados menos precisos).
+  # ----------------------------------------------------------
+  tempo_teste_seg: 90
+
+  # ----------------------------------------------------------
+  # MODOS A TESTAR
+  # ----------------------------------------------------------
+  modos: ["OPENMP", "MPI", "HYBRID"]
+
+  # ----------------------------------------------------------
+  # PESOS ESPACIAIS DO MESH SPLITTER A COMPARAR
+  # 0.0  = balanceamento só por contagem de células
+  # 0.15 = padrão (penaliza meshes distantes no mesmo núcleo)
+  # 0.25 = prioriza muito a proximidade espacial
+  # ----------------------------------------------------------
+  pesos_espaciais: [0.0, 0.10, 0.15, 0.25]
+
+  # ----------------------------------------------------------
+  # MESH SPLITTER
+  # Aplicado em MPI/HYBRID dentro da cópia temporária.
+  # ----------------------------------------------------------
+  mesh_splitter_ativo: true
+  mesh_splitter_margem_pct: 7.0
+
+  # ----------------------------------------------------------
+  # FRAÇÕES DE THREADS OPENMP (false = só testa cores_fisicos)
+  # true = testa também 75% e 50% dos cores para OPENMP
+  # ----------------------------------------------------------
+  testar_fracoes_openmp: false
+
+  # ----------------------------------------------------------
+  # CÓPIA DE ARQUIVOS AUXILIARES
+  # Arquivos até este tamanho são copiados para a pasta temp.
+  # ----------------------------------------------------------
+  copiar_arquivos_ate_mb: 250
+
+  # ----------------------------------------------------------
+  # PERFORMANCE (aplicada em todos os candidatos)
+  # ----------------------------------------------------------
+  performance:
+    kmp_affinity: true
+    omp_spin:     true
+    numa_opt:     true
