@@ -26,12 +26,21 @@ class Mesh:
         linha_raw   : texto original da linha (preservado para campos extras)
         extras      : outros parâmetros além de XB e IJK (ex: MULT_ID, ID, etc.)
     """
-    def __init__(self, id_original: int, xb: list, ijk: list, linha_raw: str, extras: str = ""):
+    def __init__(
+        self,
+        id_original: int,
+        xb: list,
+        ijk: list,
+        linha_raw: str,
+        extras: str = "",
+        mpi_process: int | None = None,
+    ):
         self.id_original = id_original
         self.xb          = xb          # [x1,x2,y1,y2,z1,z2]
         self.ijk         = ijk          # [ni,nj,nk]
         self.linha_raw   = linha_raw
         self.extras      = extras       # outros campos da linha &MESH
+        self.mpi_process = mpi_process
 
     @property
     def n_celulas(self) -> int:
@@ -49,11 +58,27 @@ class Mesh:
     def dz(self) -> float:
         return (self.xb[5] - self.xb[4]) / self.ijk[2] if self.ijk[2] else 1.0
 
+    @property
+    def centro(self) -> tuple[float, float, float]:
+        return (
+            (self.xb[0] + self.xb[1]) / 2,
+            (self.xb[2] + self.xb[3]) / 2,
+            (self.xb[4] + self.xb[5]) / 2,
+        )
+
     def para_linha_fds(self) -> str:
         xb_str  = ", ".join(f"{v:.6g}" for v in self.xb)
         ijk_str = ", ".join(str(v) for v in self.ijk)
-        extras  = (" " + self.extras.strip()) if self.extras.strip() else ""
-        return f"&MESH XB={xb_str}, IJK={ijk_str}{extras} /"
+        campos = [f"XB={xb_str}", f"IJK={ijk_str}"]
+
+        extras = self.extras.strip().strip(",").strip()
+        if extras:
+            campos.append(extras)
+
+        if self.mpi_process is not None:
+            campos.append(f"MPI_PROCESS={self.mpi_process}")
+
+        return f"&MESH {', '.join(campos)} /"
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +87,7 @@ class Mesh:
 _RE_MESH  = re.compile(r'&MESH\b(.*?)/', re.IGNORECASE | re.DOTALL)
 _RE_XB    = re.compile(r'XB\s*=\s*([\d\s.,eE+\-]+)', re.IGNORECASE)
 _RE_IJK   = re.compile(r'IJK\s*=\s*([\d\s,]+)', re.IGNORECASE)
+_RE_MPI_PROCESS = re.compile(r'MPI_PROCESS\s*=\s*(-?\d+)\s*,?', re.IGNORECASE)
 _RE_EXTRA = re.compile(
     r'(?:XB|IJK)\s*=\s*[\d\s.,eE+\-]+(?:,)?',
     re.IGNORECASE
@@ -74,6 +100,11 @@ def _parse_floats(s: str) -> list:
 
 def _parse_ints(s: str) -> list:
     return [int(x) for x in re.split(r'[,\s]+', s.strip()) if x]
+
+
+def _limpar_extras(s: str) -> str:
+    s = re.sub(r'\s*,\s*', ', ', s)
+    return s.strip().strip(",").strip()
 
 
 def ler_meshes(caminho_fds: str) -> list[Mesh]:
@@ -98,10 +129,17 @@ def ler_meshes(caminho_fds: str) -> list[Mesh]:
             logger.warning(f"Mesh #{idx}: formato inválido (XB={xb}, IJK={ijk}), pulando.")
             continue
 
-        # Extrai campos extras (tudo exceto XB e IJK)
-        extras = _RE_EXTRA.sub("", corpo).strip().rstrip(",").strip()
+        mpi_process = None
+        mpi_m = _RE_MPI_PROCESS.search(corpo)
+        if mpi_m:
+            mpi_process = int(mpi_m.group(1))
 
-        meshes.append(Mesh(idx, xb, ijk, m.group(0), extras))
+        # Extrai campos extras (tudo exceto XB, IJK e MPI_PROCESS)
+        extras = _RE_EXTRA.sub("", corpo)
+        extras = _RE_MPI_PROCESS.sub("", extras)
+        extras = _limpar_extras(extras)
+
+        meshes.append(Mesh(idx, xb, ijk, m.group(0), extras, mpi_process))
 
     return meshes
 
@@ -183,8 +221,8 @@ def _cortar_mesh(mesh: Mesh, eixo: int) -> tuple["Mesh", "Mesh"]:
     ijk_a = list(ijk); ijk_a[eixo] = n1
     ijk_b = list(ijk); ijk_b[eixo] = n2
 
-    mesh_a = Mesh(mesh.id_original, xb_a, ijk_a, "", mesh.extras)
-    mesh_b = Mesh(mesh.id_original, xb_b, ijk_b, "", mesh.extras)
+    mesh_a = Mesh(mesh.id_original, xb_a, ijk_a, "", mesh.extras, mesh.mpi_process)
+    mesh_b = Mesh(mesh.id_original, xb_b, ijk_b, "", mesh.extras, mesh.mpi_process)
     return mesh_a, mesh_b
 
 
@@ -232,7 +270,7 @@ def dividir_meshes(meshes: list[Mesh], n_cores: int, margem_pct: float = 10.0) -
         nomes_eixo = ["X", "Y", "Z"]
         logger.info(
             f"  Cortando mesh #{mesh_cortar.id_original} no eixo {nomes_eixo[eixo]} "
-            f"({mesh_cortar.ijk[eixo]} células → "
+            f"({mesh_cortar.ijk[eixo]} células -> "
             f"{mesh_cortar.ijk[eixo]//2} + {mesh_cortar.ijk[eixo] - mesh_cortar.ijk[eixo]//2})"
         )
 
@@ -275,10 +313,108 @@ def _distribuir_greedy(meshes: list[Mesh], n_cores: int) -> list[list[int]]:
     return cargas
 
 
+def _desequilibrio_por_somas(somas: list[int]) -> float:
+    if not somas:
+        return 0.0
+    max_c = max(somas)
+    min_c = min(somas)
+    return (max_c - min_c) / max_c * 100 if max_c else 0.0
+
+
+def _somas_grupos(grupos: list[list[Mesh]]) -> list[int]:
+    return [sum(m.n_celulas for m in grp) for grp in grupos]
+
+
+def _grupos_por_mpi_process(meshes: list[Mesh], n_cores: int) -> list[list[Mesh]] | None:
+    grupos = [[] for _ in range(n_cores)]
+    for mesh in meshes:
+        if mesh.mpi_process is None:
+            return None
+        if mesh.mpi_process < 0 or mesh.mpi_process >= n_cores:
+            return None
+        grupos[mesh.mpi_process].append(mesh)
+    return grupos
+
+
+def meshes_ja_otimizadas(meshes: list[Mesh], n_cores: int, margem_pct: float) -> bool:
+    if len(meshes) < n_cores:
+        return False
+
+    grupos = _grupos_por_mpi_process(meshes, n_cores)
+    if grupos is None:
+        return False
+    if any(not grp for grp in grupos):
+        return False
+
+    somas = _somas_grupos(grupos)
+    desbal = _desequilibrio_por_somas(somas)
+    logger.info(f"  MPI_PROCESS existente: desequilíbrio {desbal:.1f}%")
+    return desbal <= margem_pct
+
+
+def _diagonal_dominio(meshes: list[Mesh]) -> float:
+    if not meshes:
+        return 1.0
+
+    xmin = min(m.xb[0] for m in meshes)
+    xmax = max(m.xb[1] for m in meshes)
+    ymin = min(m.xb[2] for m in meshes)
+    ymax = max(m.xb[3] for m in meshes)
+    zmin = min(m.xb[4] for m in meshes)
+    zmax = max(m.xb[5] for m in meshes)
+    diagonal = math.sqrt((xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2)
+    return diagonal or 1.0
+
+
+def _distancia_normalizada_ao_grupo(mesh: Mesh, grupo: list[Mesh], diagonal: float) -> float:
+    if not grupo:
+        return 0.0
+
+    cx, cy, cz = mesh.centro
+    menor = min(
+        math.sqrt((cx - gx) ** 2 + (cy - gy) ** 2 + (cz - gz) ** 2)
+        for gx, gy, gz in (m.centro for m in grupo)
+    )
+    return menor / diagonal
+
+
+def _montar_grupos_balanceados(
+    meshes: list[Mesh],
+    n_cores: int,
+    peso_espacial: float,
+) -> list[list[Mesh]]:
+    grupos = [[] for _ in range(n_cores)]
+    somas = [0] * n_cores
+    total = sum(m.n_celulas for m in meshes)
+    alvo = max(1.0, total / max(1, n_cores))
+    diagonal = _diagonal_dominio(meshes)
+
+    for mesh in sorted(meshes, key=lambda m: m.n_celulas, reverse=True):
+        vazios = [i for i, grp in enumerate(grupos) if not grp]
+        if vazios:
+            idx = vazios[0]
+        else:
+            def score(i: int) -> float:
+                carga = (somas[i] + mesh.n_celulas) / alvo
+                distancia = _distancia_normalizada_ao_grupo(mesh, grupos[i], diagonal)
+                return carga + peso_espacial * distancia
+
+            idx = min(range(n_cores), key=score)
+
+        grupos[idx].append(mesh)
+        somas[idx] += mesh.n_celulas
+
+    return grupos
+
+
 # ---------------------------------------------------------------------------
 # Reordenação das meshes para atribuição crescente por núcleo
 # ---------------------------------------------------------------------------
-def reordenar_meshes_por_nucleo(meshes: list[Mesh], n_cores: int) -> list[Mesh]:
+def reordenar_meshes_por_nucleo(
+    meshes: list[Mesh],
+    n_cores: int,
+    peso_espacial: float = 0.15,
+) -> list[Mesh]:
     """
     Reordena a lista de meshes de forma que cada núcleo receba um bloco
     contíguo e crescente de IDs — exigência do FDS para MPI.
@@ -292,17 +428,13 @@ def reordenar_meshes_por_nucleo(meshes: list[Mesh], n_cores: int) -> list[Mesh]:
          → resultado é uma lista com IDs implicitamente crescentes
     """
     # Greedy: associa cada mesh a um núcleo
-    somas   = [0] * n_cores
-    grupos  = [[] for _ in range(n_cores)]
-
-    for mesh in sorted(meshes, key=lambda m: m.n_celulas, reverse=True):
-        idx_min = somas.index(min(somas))
-        grupos[idx_min].append(mesh)
-        somas[idx_min] += mesh.n_celulas
+    grupos = _montar_grupos_balanceados(meshes, n_cores, peso_espacial)
 
     # Dentro de cada núcleo, ordena por posição espacial (X, Y, Z)
-    for grp in grupos:
+    for idx_proc, grp in enumerate(grupos):
         grp.sort(key=lambda m: (m.xb[0], m.xb[2], m.xb[4]))
+        for mesh in grp:
+            mesh.mpi_process = idx_proc
 
     # Log de distribuição
     sep = "-" * 55
@@ -367,6 +499,8 @@ def processar_meshes(
     n_cores: int,
     margem_pct: float = 10.0,
     dry_run: bool = False,
+    pular_se_otimizado: bool = True,
+    peso_espacial: float = 0.15,
 ) -> int:
     """
     Orquestra leitura → divisão → reordenação → reescrita.
@@ -398,13 +532,17 @@ def processar_meshes(
     logger.info(f"  Meshes originais : {len(meshes_originais)}")
     logger.info(f"  Células originais: {sum(m.n_celulas for m in meshes_originais)}")
 
+    if pular_se_otimizado and meshes_ja_otimizadas(meshes_originais, n_cores, margem_pct):
+        logger.info("  Meshes ja otimizadas para esta configuracao. Reescrita ignorada.")
+        return len(meshes_originais)
+
     # Se já tem meshes suficientes, apenas reordena
     if len(meshes_originais) >= n_cores:
         logger.info("  Meshes já suficientes. Apenas reordenando.")
-        novas_meshes = reordenar_meshes_por_nucleo(meshes_originais, n_cores)
+        novas_meshes = reordenar_meshes_por_nucleo(meshes_originais, n_cores, peso_espacial)
     else:
         novas_meshes = dividir_meshes(meshes_originais, n_cores, margem_pct)
-        novas_meshes = reordenar_meshes_por_nucleo(novas_meshes, n_cores)
+        novas_meshes = reordenar_meshes_por_nucleo(novas_meshes, n_cores, peso_espacial)
 
     logger.info(f"  Meshes finais    : {len(novas_meshes)}")
     logger.info(f"  Células totais   : {sum(m.n_celulas for m in novas_meshes)}")

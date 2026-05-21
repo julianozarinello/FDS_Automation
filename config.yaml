@@ -13,7 +13,7 @@
 # ----------------------------------------------------------
 
 # Opção A (RECOMENDADA): aponte para a pasta com os arquivos .fds
-pasta_simulacoes: "C:/Users/Aluga.com/Documents/Programas/Pyrosim teste/FDS"
+pasta_simulacoes: "C:/Programas/FDS_Automation/AURORA - FDS"
 
 # Opção B: lista manual (comente 'pasta_simulacoes' para usar)
 # simulacoes:
@@ -26,7 +26,7 @@ pasta_simulacoes: "C:/Users/Aluga.com/Documents/Programas/Pyrosim teste/FDS"
 # ----------------------------------------------------------
 # INSTALAÇÃO DO FDS
 # ----------------------------------------------------------
-diretorio_fds: "C:/Program Files/PyroSim 2023/fds"
+diretorio_fds: "C:/Program Files/firemodels/FDS6/bin"
 
 # ----------------------------------------------------------
 # AUTO-CONFIGURAÇÃO DE HARDWARE
@@ -57,9 +57,11 @@ hybrid:
 # O arquivo original é preservado em um backup (.fds.bak).
 # ----------------------------------------------------------
 mesh_splitter:
-  ativo:      false    # mude para true para ativar
-  margem_pct: 10.0     # % máximo de desequilíbrio de células entre núcleos
+  ativo:      true   # mude para true para ativar
+  margem_pct: 7.0     # % máximo de desequilíbrio de células entre núcleos
   dry_run:    false    # true = apenas loga, NÃO modifica o arquivo
+  pular_se_otimizado: true # true = nao reescreve se MPI_PROCESS ja estiver balanceado
+  peso_espacial: 0.15      # 0 = so carga; maior = aproxima meshes vizinhas no mesmo MPI
 
 # ----------------------------------------------------------
 # PERFORMANCE
@@ -69,3 +71,45 @@ performance:
   kmp_affinity: true   # Fixa threads a núcleos físicos
   omp_spin:     true   # Threads em spin-wait (menos latência)
   numa_opt:     true   # Otimização NUMA (CPUs multi-socket)
+
+# ----------------------------------------------------------
+# AUTO-BENCHMARK
+# Roda testes curtos em copia temporaria do .fds para escolher
+# o modo mais rapido sem alterar a simulacao original.
+# Deixe false se quiser iniciar a fila imediatamente.
+# ----------------------------------------------------------
+auto_benchmark:
+  ativo: false
+  tempo_max_seg: 45
+  modos: ["OPENMP", "MPI", "HYBRID"]
+
+# ----------------------------------------------------------
+# OTIMIZADOR EMPIRICO
+# Testa configuracoes curtas em copia temporaria, mede o
+# avanco real pelo Time Step do FDS e usa cache por caso/hardware.
+# Nao muda a fisica do modelo; altera apenas paralelismo e
+# distribuicao MPI_PROCESS das meshes.
+# ----------------------------------------------------------
+otimizador:
+  ativo: true
+  tempo_teste_seg: 45
+  max_tentativas: 10
+  melhoria_min_pct: 3.0
+  usar_cache: true
+  cache_max_entradas: 100
+  testar_modos: ["OPENMP", "MPI", "HYBRID"]
+  testar_peso_espacial: [0.0, 0.10, 0.15, 0.25]
+  testar_threads_openmp: false
+  copiar_arquivos_auxiliares: true
+  copiar_arquivos_ate_mb: 250
+
+# ----------------------------------------------------------
+# INTERFACE DO CONSOLE
+# Mantem a tela limpa durante a execucao. O log completo do
+# FDS continua sendo salvo em fds_run.log.
+# ----------------------------------------------------------
+interface:
+  console_amigavel: true           # true = mostra apenas status principal no console
+  limpar_console: true             # true = limpa o terminal entre etapas da fila
+  mostrar_saida_fds_console: false # true = mostra a saida completa do FDS no console
+  intervalo_status_seg: 30         # intervalo entre mensagens de progresso

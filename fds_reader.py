@@ -1,9 +1,13 @@
 # Subrotina responsável por preparar o ambiente e ler o arquivo FDS
 import os
+import re
 import shutil
 import logging
 
 logger = logging.getLogger(__name__)
+
+_RE_MESH = re.compile(r'&MESH\b(.*?)/', re.IGNORECASE | re.DOTALL)
+_RE_MPI_PROCESS = re.compile(r'\bMPI_PROCESS\s*=', re.IGNORECASE)
 
 
 def preparar_ambiente_fds(diretorio_base_fds: str, pasta_projeto: str) -> None:
@@ -53,3 +57,22 @@ def contar_meshes(caminho_arquivo: str) -> int:
 
     logger.info(f"Meshes detectadas: {contador}")
     return contador
+
+
+def contar_meshes_com_mpi_process(caminho_arquivo: str) -> int:
+    """
+    Conta quantas entradas &MESH possuem MPI_PROCESS definido.
+    Funciona tambem para MESH multi-linha.
+    """
+    if not os.path.exists(caminho_arquivo):
+        logger.error(f"Arquivo nao encontrado: {caminho_arquivo}")
+        return 0
+
+    with open(caminho_arquivo, 'r', encoding='latin-1') as f:
+        conteudo = f.read()
+
+    return sum(
+        1
+        for mesh in _RE_MESH.finditer(conteudo)
+        if _RE_MPI_PROCESS.search(mesh.group(1))
+    )

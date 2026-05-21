@@ -1,4 +1,4 @@
-# FDS Automation v1.13
+# FDS Automation v1.16
 
 Gerenciador de simulações [Fire Dynamics Simulator (FDS)](https://pages.nist.gov/fds-smv/) em Python, com auto-descoberta de arquivos, fila sequencial e otimizações de performance.
 
@@ -66,6 +66,25 @@ arquivo_fds: "C:/Projetos/FDS/Pyrosim.fds"
 | `KMP_BLOCKTIME` | Tempo de bloqueio de thread controlado |
 | `OMP_PLACES=cores` | Otimização NUMA para CPUs multi-socket |
 | `-bind-to core` (MPI) | Cada processo MPI fixado a um núcleo |
+
+## Otimizador empirico
+
+O bloco `otimizador` do `config.yaml` roda testes curtos em uma copia temporaria do caso
+antes da simulacao principal. Ele mede o avanco real pelo `Time Step` do FDS, compara
+`OPENMP`, `MPI`, `HYBRID` e variacoes de `MPI_PROCESS`, e salva a melhor escolha em
+`.fds_optimizer_cache.json`.
+
+Esse processo nao altera a fisica do modelo. Ele muda apenas a forma de usar CPU,
+threads/processos MPI e distribuicao das meshes entre processos.
+
+```yaml
+otimizador:
+  ativo: true
+  tempo_teste_seg: 45
+  max_tentativas: 10
+  melhoria_min_pct: 3.0
+  usar_cache: true
+```
 
 ## Relatório final
 

@@ -89,25 +89,26 @@ def recomendar_config(hw: dict, n_meshes: int = 0) -> dict:
     rec = {}
 
     if n_meshes > 1 and not hw["is_amd"]:
-        if n_meshes <= cf:
+        if n_meshes >= cf:
             # MPI puro: 1 processo por mesh
             rec["modo"]      = "MPI"
-            rec["num_cores"] = n_meshes
-            rec["hybrid"]    = {"mpi_procs": n_meshes, "omp_threads": 1}
+            mpi_p = min(n_meshes, cf)
+            rec["num_cores"] = mpi_p
+            rec["hybrid"]    = {"mpi_procs": mpi_p, "omp_threads": 1}
             rec["motivo"]    = (
-                f"{n_meshes} mesh(es) detectada(s) → MPI puro "
-                f"({n_meshes} processo(s), 1 thread cada)."
+                f"{n_meshes} mesh(es), {cf} core(s) fisico(s) -> "
+                f"MPI puro com {mpi_p} processo(s) e MPI_PROCESS balanceado."
             )
         else:
             # Mais meshes do que cores: HYBRID com distribuição equilibrada
-            omp_t = max(1, cf // n_meshes)
-            mpi_p = min(n_meshes, cf // omp_t)
+            mpi_p = n_meshes
+            omp_t = max(1, cf // mpi_p)
             rec["modo"]      = "HYBRID"
             rec["num_cores"] = mpi_p * omp_t
             rec["hybrid"]    = {"mpi_procs": mpi_p, "omp_threads": omp_t}
             rec["motivo"]    = (
-                f"{n_meshes} mesh(es), {cf} core(s) físico(s) → "
-                f"HYBRID {mpi_p}×MPI × {omp_t}×OMP = {mpi_p*omp_t} core(s)."
+                f"{n_meshes} mesh(es), {cf} core(s) físico(s) -> "
+                f"HYBRID {mpi_p}xMPI x {omp_t}xOMP = {mpi_p*omp_t} core(s)."
             )
     else:
         # OPENMP puro (AMD, mesh única ou padrão)
@@ -116,12 +117,12 @@ def recomendar_config(hw: dict, n_meshes: int = 0) -> dict:
         rec["hybrid"]    = {"mpi_procs": 1, "omp_threads": cf}
         if hw["is_amd"]:
             rec["motivo"] = (
-                f"CPU AMD detectada → OPENMP puro com {cf} core(s) físico(s) "
+                f"CPU AMD detectada -> OPENMP puro com {cf} core(s) físico(s) "
                 "(OpenMP GNU mais eficiente em AMD)."
             )
         else:
             rec["motivo"] = (
-                f"Mesh única ou padrão → OPENMP puro com {cf} core(s) físico(s)."
+                f"Mesh única ou padrão -> OPENMP puro com {cf} core(s) físico(s)."
             )
 
     return rec
