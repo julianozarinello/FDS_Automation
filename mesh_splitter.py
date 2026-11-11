@@ -9,7 +9,15 @@ import os
 import math
 import shutil
 import logging
+import tempfile
 from copy import deepcopy
+
+from fds_reader import (
+    encontrar_namelists,
+    mascarar_strings_fortran,
+    motivos_contagem_mesh_indeterminada,
+    remover_comentarios_fortran,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +75,10 @@ class Mesh:
         )
 
     def para_linha_fds(self) -> str:
-        xb_str  = ", ".join(f"{v:.6g}" for v in self.xb)
+        # 17 digitos significativos evitam o arredondamento que formatos
+        # curtos causavam em dominios grandes e garantem round-trip IEEE-754:
+        # ler -> regravar -> ler devolve exatamente a mesma coordenada.
+        xb_str  = ", ".join(f"{v:.17g}" for v in self.xb)
         ijk_str = ", ".join(str(v) for v in self.ijk)
         campos = [f"XB={xb_str}", f"IJK={ijk_str}"]
 
@@ -84,27 +95,143 @@ class Mesh:
 # ---------------------------------------------------------------------------
 # Leitura de meshes do arquivo .fds
 # ---------------------------------------------------------------------------
-_RE_MESH  = re.compile(r'&MESH\b(.*?)/', re.IGNORECASE | re.DOTALL)
-_RE_XB    = re.compile(r'XB\s*=\s*([\d\s.,eE+\-]+)', re.IGNORECASE)
-_RE_IJK   = re.compile(r'IJK\s*=\s*([\d\s,]+)', re.IGNORECASE)
-_RE_MPI_PROCESS = re.compile(r'MPI_PROCESS\s*=\s*(-?\d+)\s*,?', re.IGNORECASE)
-_RE_EXTRA = re.compile(
-    r'(?:XB|IJK)\s*=\s*[\d\s.,eE+\-]+(?:,)?',
-    re.IGNORECASE
+_RE_ATRIBUICAO = re.compile(
+    r"(?<![A-Z0-9_%])([A-Z][A-Z0-9_%]*(?:\s*\([^)]*\))?)\s*=",
+    re.IGNORECASE,
 )
 
 
+def _expandir_repeticoes_fortran(s: str, conversor) -> list:
+    """Expande a notacao de repeticao de namelist (ex.: 3*4 -> 4,4,4)."""
+    valores = []
+    for token in (x for x in re.split(r'[,\s]+', s.strip()) if x):
+        if "*" in token:
+            repeticoes_txt, valor_txt = token.split("*", 1)
+            repeticoes = int(repeticoes_txt)
+            if repeticoes < 0 or not valor_txt:
+                raise ValueError(f"repeticao invalida: {token}")
+            valor = conversor(valor_txt.replace("D", "E").replace("d", "e"))
+            valores.extend([valor] * repeticoes)
+        else:
+            valores.append(conversor(token.replace("D", "E").replace("d", "e")))
+    return valores
+
+
 def _parse_floats(s: str) -> list:
-    return [float(x) for x in re.split(r'[,\s]+', s.strip()) if x]
+    return _expandir_repeticoes_fortran(s, float)
 
 
 def _parse_ints(s: str) -> list:
-    return [int(x) for x in re.split(r'[,\s]+', s.strip()) if x]
+    return _expandir_repeticoes_fortran(s, int)
 
 
-def _limpar_extras(s: str) -> str:
-    s = re.sub(r'\s*,\s*', ', ', s)
-    return s.strip().strip(",").strip()
+def _campos_namelist(corpo: str) -> list[dict[str, str]]:
+    """Tokeniza atribuicoes fora de strings sem alterar textos livres.
+
+    Valores vetoriais do FDS usam virgulas, portanto nao e seguro separar um
+    namelist simplesmente por ``,``. Em vez disso, cada campo termina onde a
+    proxima atribuicao ``NOME=`` comeca; strings ficam mascaradas durante essa
+    busca. Assim ``ID='A,B / XB=texto'`` continua sendo um unico campo.
+    """
+    mascara = mascarar_strings_fortran(corpo)
+    correspondencias = list(_RE_ATRIBUICAO.finditer(mascara))
+    if not correspondencias:
+        return []
+
+    prefixo = mascara[:correspondencias[0].start()]
+    if prefixo.strip(" \t\r\n,"):
+        raise ValueError(f"texto inesperado antes do primeiro campo: {prefixo!r}")
+
+    campos: list[dict[str, str]] = []
+    for indice, atual in enumerate(correspondencias):
+        fim = (
+            correspondencias[indice + 1].start()
+            if indice + 1 < len(correspondencias)
+            else len(corpo)
+        )
+        nome_com_indice = atual.group(1).strip()
+        nome = nome_com_indice.split("(", 1)[0].strip().upper()
+        valor = corpo[atual.end():fim].strip().rstrip(",").rstrip()
+        texto = corpo[atual.start():fim].strip().strip(",").strip()
+        campos.append({"nome": nome, "valor": valor, "texto": texto})
+    return campos
+
+
+def _tem_campo_extra(mesh: Mesh, campo: str) -> bool:
+    try:
+        return any(
+            item["nome"] == campo.upper() for item in _campos_namelist(mesh.extras)
+        )
+    except ValueError:
+        return False
+
+
+def _valor_logico_verdadeiro(valor: str) -> bool:
+    return valor.strip().strip(",").upper() in {"T", ".TRUE.", "TRUE"}
+
+
+def _motivos_bloqueio_divisao(caminho_fds: str, meshes: list[Mesh]) -> list[str]:
+    """Recursos cuja semantica depende da ordem/quantidade de meshes."""
+    motivos: list[str] = []
+
+    campos_transformacao = ("TRNX_ID", "TRNY_ID", "TRNZ_ID")
+    if any(
+        _tem_campo_extra(mesh, campo)
+        for mesh in meshes
+        for campo in campos_transformacao
+    ):
+        motivos.append("TRNX_ID/TRNY_ID/TRNZ_ID em MESH")
+
+    for mesh in meshes:
+        try:
+            campos = _campos_namelist(mesh.extras)
+        except ValueError:
+            campos = []
+        if any(
+            campo["nome"] == "CYLINDRICAL"
+            and _valor_logico_verdadeiro(campo["valor"])
+            for campo in campos
+        ):
+            motivos.append("mesh CYLINDRICAL")
+            break
+
+    with open(caminho_fds, "r", encoding="latin-1") as f:
+        conteudo = f.read()
+
+    # No fonte atual do FDS, estes sao os namelists que aceitam MESH_NUMBER.
+    # Inserir filhas deslocaria o indice e poderia mudar transformacoes ou
+    # fazer uma slice apontar apenas para a filha/mesh errada.
+    for nome_dependente in ("TRNX", "TRNY", "TRNZ", "SLCF"):
+        for bloco in encontrar_namelists(conteudo, nome_dependente):
+            corpo = remover_comentarios_fortran(bloco.corpo)
+            try:
+                campos = _campos_namelist(corpo)
+            except ValueError:
+                campos = []
+            if any(campo["nome"] == "MESH_NUMBER" for campo in campos):
+                motivos.append(f"{nome_dependente} com MESH_NUMBER")
+                break
+
+    if encontrar_namelists(conteudo, "CSVF"):
+        motivos.append("CSVF associado a meshes")
+
+    for bloco in encontrar_namelists(conteudo, "MISC"):
+        corpo = remover_comentarios_fortran(bloco.corpo)
+        try:
+            campos = _campos_namelist(corpo)
+        except ValueError:
+            campos = []
+        for campo in campos:
+            if campo["nome"] == "RESTART" and _valor_logico_verdadeiro(campo["valor"]):
+                motivos.append("RESTART ativo")
+            elif campo["nome"] == "RESTART_CHID":
+                valor = campo["valor"].strip().strip("'\"").strip()
+                if valor and valor.lower() != "null":
+                    motivos.append("RESTART_CHID definido")
+
+    # Mantem a mensagem curta e deterministica quando mais de uma linha usa
+    # o mesmo recurso.
+    return list(dict.fromkeys(motivos))
 
 
 def ler_meshes(caminho_fds: str) -> list[Mesh]:
@@ -113,33 +240,75 @@ def ler_meshes(caminho_fds: str) -> list[Mesh]:
         conteudo = f.read()
 
     meshes = []
-    for idx, m in enumerate(_RE_MESH.finditer(conteudo), start=1):
-        corpo = m.group(1)
+    erros = []
+    for idx, bloco in enumerate(encontrar_namelists(conteudo, "MESH"), start=1):
+        # Comentarios podem conter '/', XB/IJK de exemplo ou texto livre.
+        # Eles nao participam do namelist e nao devem virar campos na linha
+        # regravada. Strings permanecem intactas, inclusive ID='A/B'.
+        corpo = remover_comentarios_fortran(bloco.corpo)
 
-        xb_m  = _RE_XB.search(corpo)
-        ijk_m = _RE_IJK.search(corpo)
-        if not xb_m or not ijk_m:
-            logger.warning(f"Mesh #{idx}: XB ou IJK não encontrado, pulando.")
+        try:
+            campos = _campos_namelist(corpo)
+        except ValueError as exc:
+            erros.append(f"mesh #{idx}: namelist invalido ({exc})")
+            continue
+        por_nome: dict[str, list[dict[str, str]]] = {}
+        for campo in campos:
+            por_nome.setdefault(campo["nome"], []).append(campo)
+
+        if len(por_nome.get("XB", [])) != 1 or len(por_nome.get("IJK", [])) != 1:
+            erros.append(f"mesh #{idx}: XB ou IJK nao encontrado")
             continue
 
-        xb  = _parse_floats(xb_m.group(1))
-        ijk = _parse_ints(ijk_m.group(1))
+        try:
+            xb = _parse_floats(por_nome["XB"][0]["valor"])
+            ijk = _parse_ints(por_nome["IJK"][0]["valor"])
+        except (TypeError, ValueError) as exc:
+            erros.append(f"mesh #{idx}: valores invalidos ({exc})")
+            continue
 
         if len(xb) != 6 or len(ijk) != 3:
-            logger.warning(f"Mesh #{idx}: formato inválido (XB={xb}, IJK={ijk}), pulando.")
+            erros.append(f"mesh #{idx}: formato invalido (XB={xb}, IJK={ijk})")
+            continue
+        if any(n <= 0 for n in ijk):
+            erros.append(f"mesh #{idx}: IJK deve conter inteiros positivos ({ijk})")
+            continue
+        if any(not math.isfinite(v) for v in xb) or any(
+            xb[i] >= xb[i + 1] for i in (0, 2, 4)
+        ):
+            erros.append(f"mesh #{idx}: limites XB invalidos ({xb})")
             continue
 
         mpi_process = None
-        mpi_m = _RE_MPI_PROCESS.search(corpo)
-        if mpi_m:
-            mpi_process = int(mpi_m.group(1))
+        campos_mpi = por_nome.get("MPI_PROCESS", [])
+        if len(campos_mpi) > 1:
+            erros.append(f"mesh #{idx}: MPI_PROCESS definido mais de uma vez")
+            continue
+        if campos_mpi:
+            valor_mpi = campos_mpi[0]["valor"].strip()
+            if not re.fullmatch(r"[+-]?\d+", valor_mpi):
+                erros.append(f"mesh #{idx}: MPI_PROCESS invalido ({valor_mpi!r})")
+                continue
+            mpi_process = int(valor_mpi)
 
         # Extrai campos extras (tudo exceto XB, IJK e MPI_PROCESS)
-        extras = _RE_EXTRA.sub("", corpo)
-        extras = _RE_MPI_PROCESS.sub("", extras)
-        extras = _limpar_extras(extras)
+        extras = ", ".join(
+            campo["texto"]
+            for campo in campos
+            if campo["nome"] not in {"XB", "IJK", "MPI_PROCESS"}
+        )
 
-        meshes.append(Mesh(idx, xb, ijk, m.group(0), extras, mpi_process))
+        meshes.append(Mesh(idx, xb, ijk, bloco.texto, extras, mpi_process))
+
+    if erros:
+        # Nunca continue com uma lista parcial: a reescrita substitui todos os
+        # namelists &MESH e uma entrada ignorada seria apagada silenciosamente.
+        resumo = "; ".join(erros[:5])
+        if len(erros) > 5:
+            resumo += f"; e mais {len(erros) - 5} erro(s)"
+        raise ValueError(
+            "Mesh Splitter cancelado para preservar o arquivo original: " + resumo
+        )
 
     return meshes
 
@@ -153,24 +322,26 @@ def _melhor_eixo(mesh: Mesh) -> int:
     Critérios (em ordem):
       1. O eixo com maior número de células (mais para dividir)
       2. Número de células deve ser par (para corte exato ao meio)
-      3. Evita eixo com menos de 4 células (resultado seria inválido)
+      3. Exige pelo menos 4 celulas em cada filha (n >= 8)
     """
     candidatos = []
     for eixo in range(3):
         n = mesh.ijk[eixo]
-        if n < 4:
-            continue  # mínimo 2 células por metade
-        score = n  # prefere o maior
-        # Bônus se for par (corte limpo)
-        if n % 2 == 0:
-            score += 1000
-        candidatos.append((score, eixo))
+        if n < 8:
+            # Dimensoes 2 ou 3 frequentemente falham na inicializacao da
+            # equacao de Poisson do FDS. O eixo unitario de um caso 2D nao e
+            # candidato a corte; nos demais, cada filha fica com >=4.
+            continue
+        # O maior eixo vem primeiro; paridade serve apenas como desempate.
+        # O bonus fixo anterior podia preferir 4 celulas pares a 101 impares,
+        # criando subdominios muito finos e mais comunicacao entre meshes.
+        candidatos.append((n, 1 if n % 2 == 0 else 0, eixo))
 
     if not candidatos:
         return -1  # mesh muito pequena, não pode ser cortada
 
     candidatos.sort(reverse=True)
-    return candidatos[0][1]
+    return candidatos[0][2]
 
 
 # ---------------------------------------------------------------------------
@@ -229,10 +400,15 @@ def _cortar_mesh(mesh: Mesh, eixo: int) -> tuple["Mesh", "Mesh"]:
 # ---------------------------------------------------------------------------
 # Algoritmo principal de divisão
 # ---------------------------------------------------------------------------
-def dividir_meshes(meshes: list[Mesh], n_cores: int, margem_pct: float = 10.0) -> list[Mesh]:
+def dividir_meshes(
+    meshes: list[Mesh],
+    n_cores: int,
+    margem_pct: float = 10.0,
+    max_meshes_por_core: int = 4,
+) -> list[Mesh]:
     """
-    Divide as meshes até que o número total seja suficiente para distribuir
-    de forma equilibrada entre n_cores, respeitando a margem de tolerância.
+    Divide as meshes ate haver trabalho para todos os processos e, depois,
+    continua somente enquanto cada corte melhorar o balanceamento previsto.
 
     Parâmetros:
         meshes     : lista de Mesh lidas do arquivo
@@ -242,56 +418,89 @@ def dividir_meshes(meshes: list[Mesh], n_cores: int, margem_pct: float = 10.0) -
     Retorna:
         lista de Mesh (pode ter mais itens que a original)
     """
+    if n_cores <= 0:
+        raise ValueError("n_cores deve ser maior que zero")
+
     resultado = deepcopy(meshes)
+    margem_pct = max(0.0, float(margem_pct))
+    max_meshes_por_core = max(1, int(max_meshes_por_core))
+    limite_meshes = max(len(resultado), n_cores * max_meshes_por_core)
+    max_iter = max(50, limite_meshes - len(resultado))
 
-    # Precisamos de n_cores meshes (1 por núcleo) como alvo mínimo
-    alvo = n_cores
+    def desequilibrio(lista: list[Mesh]) -> float:
+        if len(lista) < n_cores:
+            return float("inf")
+        grupos = _particionar_contiguo_por_carga(lista, n_cores)
+        return _desequilibrio_por_somas(_somas_grupos(grupos))
 
-    iteracao = 0
-    MAX_ITER = 50
-
-    while len(resultado) < alvo and iteracao < MAX_ITER:
-        iteracao += 1
-
-        # Escolhe a mesh com mais células para cortar
-        candidatos = [
-            (i, m) for i, m in enumerate(resultado)
-            if _melhor_eixo(m) >= 0
-        ]
-        if not candidatos:
-            logger.warning("Nenhuma mesh pode ser dividida mais. Encerrando divisão.")
+    for _ in range(max_iter):
+        atual = desequilibrio(resultado)
+        if len(resultado) >= n_cores and atual <= margem_pct:
+            break
+        if len(resultado) >= limite_meshes:
+            logger.info(
+                f"  Limite conservador de {limite_meshes} meshes atingido "
+                f"({max_meshes_por_core} por processo)."
+            )
             break
 
-        # Ordena pelo maior número de células
-        candidatos.sort(key=lambda x: x[1].n_celulas, reverse=True)
-        idx_cortar, mesh_cortar = candidatos[0]
+        candidatos = [
+            (i, mesh) for i, mesh in enumerate(resultado)
+            if _melhor_eixo(mesh) >= 0
+        ]
+        if not candidatos:
+            logger.warning("Nenhuma mesh pode ser dividida mais. Encerrando divisao.")
+            break
 
-        eixo = _melhor_eixo(mesh_cortar)
+        candidatos.sort(key=lambda item: item[1].n_celulas, reverse=True)
+        escolha = None
+
+        if len(resultado) < n_cores:
+            # Primeiro garante ao menos uma mesh por processo MPI.
+            idx_cortar, mesh_cortar = candidatos[0]
+            eixo = _melhor_eixo(mesh_cortar)
+            m_a, m_b = _cortar_mesh(mesh_cortar, eixo)
+            escolha = (idx_cortar, mesh_cortar, eixo, m_a, m_b, None)
+        else:
+            # Com processos ja alimentados, simula cada corte e escolhe apenas
+            # aquele que reduz o desequilibrio. Isso evita criar fronteiras de
+            # comunicacao que nao trazem ganho de carga.
+            melhor_chave = None
+            for idx_cortar, mesh_cortar in candidatos:
+                eixo = _melhor_eixo(mesh_cortar)
+                m_a, m_b = _cortar_mesh(mesh_cortar, eixo)
+                tentativa = (
+                    resultado[:idx_cortar] + [m_a, m_b] + resultado[idx_cortar + 1:]
+                )
+                novo_desbal = desequilibrio(tentativa)
+                chave = (novo_desbal, max(m_a.n_celulas, m_b.n_celulas))
+                if melhor_chave is None or chave < melhor_chave:
+                    melhor_chave = chave
+                    escolha = (
+                        idx_cortar, mesh_cortar, eixo, m_a, m_b, novo_desbal,
+                    )
+
+            if escolha is None or escolha[5] >= atual - 1e-9:
+                logger.info("  Nenhum corte adicional melhoraria o balanceamento.")
+                break
+
+        idx_cortar, mesh_cortar, eixo, m_a, m_b, _ = escolha
         nomes_eixo = ["X", "Y", "Z"]
         logger.info(
             f"  Cortando mesh #{mesh_cortar.id_original} no eixo {nomes_eixo[eixo]} "
-            f"({mesh_cortar.ijk[eixo]} células -> "
-            f"{mesh_cortar.ijk[eixo]//2} + {mesh_cortar.ijk[eixo] - mesh_cortar.ijk[eixo]//2})"
+            f"({mesh_cortar.ijk[eixo]} celulas -> "
+            f"{mesh_cortar.ijk[eixo] // 2} + "
+            f"{mesh_cortar.ijk[eixo] - mesh_cortar.ijk[eixo] // 2})"
         )
+        resultado = resultado[:idx_cortar] + [m_a, m_b] + resultado[idx_cortar + 1:]
 
-        m_a, m_b = _cortar_mesh(mesh_cortar, eixo)
-        resultado = resultado[:idx_cortar] + [m_a, m_b] + resultado[idx_cortar+1:]
-
-    # Verifica equilíbrio de células por núcleo
     if len(resultado) >= n_cores:
-        celulas_por_mesh = sorted([m.n_celulas for m in resultado], reverse=True)
-        # Distribui greedy para verificar equilíbrio
-        cargas = _distribuir_greedy(resultado, n_cores)
-        max_c  = max(sum(ms) for ms in cargas)
-        min_c  = min(sum(ms) for ms in cargas)
-        desbal = (max_c - min_c) / max_c * 100 if max_c else 0
-
-        logger.info(f"  Desequilíbrio entre núcleos: {desbal:.1f}% (limite: {margem_pct}%)")
-
+        desbal = desequilibrio(resultado)
+        logger.info(f"  Desequilibrio entre processos: {desbal:.1f}% (limite: {margem_pct}%)")
         if desbal > margem_pct:
             logger.warning(
-                f"  Desequilíbrio ({desbal:.1f}%) acima da margem ({margem_pct}%). "
-                "Considere aumentar 'mesh_margem_pct' no config.yaml."
+                f"  Melhor desequilibrio obtido ({desbal:.1f}%) ainda esta "
+                f"acima da margem ({margem_pct}%)."
             )
 
     return resultado
@@ -325,6 +534,68 @@ def _somas_grupos(grupos: list[list[Mesh]]) -> list[int]:
     return [sum(m.n_celulas for m in grp) for grp in grupos]
 
 
+def _particionar_contiguo_por_carga(meshes: list[Mesh], n_cores: int) -> list[list[Mesh]]:
+    """
+    Particiona a ordem existente em blocos contiguos, minimizando a maior
+    carga por processo. Nao reordena &MESH: em modelos com sobreposicao, a
+    ordem pode participar da precedencia numerica do FDS.
+    """
+    if n_cores <= 0:
+        raise ValueError("n_cores deve ser maior que zero")
+    if not meshes:
+        return [[] for _ in range(n_cores)]
+
+    n_grupos = min(n_cores, len(meshes))
+    pesos = [mesh.n_celulas for mesh in meshes]
+
+    def grupos_necessarios(limite: int) -> int:
+        grupos = 1
+        soma = 0
+        for peso in pesos:
+            if soma and soma + peso > limite:
+                grupos += 1
+                soma = peso
+            else:
+                soma += peso
+        return grupos
+
+    baixo = max(max(pesos), math.ceil(sum(pesos) / n_grupos))
+    alto = sum(pesos)
+    while baixo < alto:
+        meio = (baixo + alto) // 2
+        if grupos_necessarios(meio) <= n_grupos:
+            alto = meio
+        else:
+            baixo = meio + 1
+    limite_otimo = baixo
+
+    grupos: list[list[Mesh]] = [[] for _ in range(n_grupos)]
+    idx_grupo = n_grupos - 1
+    soma = 0
+    for idx_mesh in range(len(meshes) - 1, -1, -1):
+        mesh = meshes[idx_mesh]
+        # Deixa ao menos uma mesh para cada grupo ainda a esquerda.
+        precisa_separar = (
+            bool(grupos[idx_grupo])
+            and (
+                soma + mesh.n_celulas > limite_otimo
+                or idx_mesh + 1 <= idx_grupo
+            )
+        )
+        if precisa_separar:
+            idx_grupo -= 1
+            soma = 0
+        grupos[idx_grupo].append(mesh)
+        soma += mesh.n_celulas
+
+    for grupo in grupos:
+        grupo.reverse()
+
+    if n_grupos < n_cores:
+        grupos.extend([[] for _ in range(n_cores - n_grupos)])
+    return grupos
+
+
 def _grupos_por_mpi_process(meshes: list[Mesh], n_cores: int) -> list[list[Mesh]] | None:
     grupos = [[] for _ in range(n_cores)]
     for mesh in meshes:
@@ -344,6 +615,14 @@ def meshes_ja_otimizadas(meshes: list[Mesh], n_cores: int, margem_pct: float) ->
     if grupos is None:
         return False
     if any(not grp for grp in grupos):
+        return False
+
+    # O proprio FDS Automation grava um bloco contiguo por MPI_PROCESS.
+    # Carga equilibrada com ranks intercalados nao deve ser tratada como o
+    # formato canonico, pois uma nova execucao pode depender dessa ordenacao.
+    processos = [mesh.mpi_process for mesh in meshes]
+    if processos != sorted(processos):
+        logger.info("  MPI_PROCESS existente, mas fora de blocos contiguos.")
         return False
 
     somas = _somas_grupos(grupos)
@@ -416,23 +695,16 @@ def reordenar_meshes_por_nucleo(
     peso_espacial: float = 0.15,
 ) -> list[Mesh]:
     """
-    Reordena a lista de meshes de forma que cada núcleo receba um bloco
-    contíguo e crescente de IDs — exigência do FDS para MPI.
+    Preserva a ordem dos namelists &MESH e atribui MPI_PROCESS em blocos
+    contiguos, minimizando a maior carga acumulada por processo.
 
-    Algoritmo:
-      1. Ordena meshes por número de células (decrescente)
-      2. Distribui por greedy entre núcleos (balanceamento de carga)
-      3. Dentro de cada núcleo, ordena meshes por posição espacial
-         (X → Y → Z) para manter coerência geométrica
-      4. Concatena os grupos: núcleo 0, núcleo 1, ..., núcleo N-1
-         → resultado é uma lista com IDs implicitamente crescentes
+    O parametro peso_espacial e mantido por compatibilidade de configuracao;
+    nao e usado para mover meshes, pois reordenar entradas pode alterar a
+    precedencia de meshes sobrepostas no FDS.
     """
-    # Greedy: associa cada mesh a um núcleo
-    grupos = _montar_grupos_balanceados(meshes, n_cores, peso_espacial)
+    grupos = _particionar_contiguo_por_carga(meshes, n_cores)
 
-    # Dentro de cada núcleo, ordena por posição espacial (X, Y, Z)
     for idx_proc, grp in enumerate(grupos):
-        grp.sort(key=lambda m: (m.xb[0], m.xb[2], m.xb[4]))
         for mesh in grp:
             mesh.mpi_process = idx_proc
 
@@ -446,7 +718,8 @@ def reordenar_meshes_por_nucleo(
         logger.info(f"  Núcleo {i:>3}: {len(grp):>3} mesh(es)  |  {total_celulas:>10} células")
     logger.info(sep)
 
-    # Concatena em ordem crescente de núcleo
+    # A concatenacao devolve exatamente a ordem de entrada, pois os grupos
+    # sao fatias contiguas do vetor original.
     return [m for grp in grupos for m in grp]
 
 
@@ -459,33 +732,82 @@ def reescrever_fds_com_meshes(caminho_fds: str, novas_meshes: list[Mesh]) -> str
     Cria automaticamente um backup (.fds.bak) antes de modificar.
     Retorna o caminho do backup.
     """
-    # Backup
-    caminho_bak = caminho_fds + ".bak"
-    shutil.copy2(caminho_fds, caminho_bak)
-    logger.info(f"  Backup criado: {os.path.basename(caminho_bak)}")
+    if not novas_meshes:
+        raise ValueError("Reescrita recusada: a lista de meshes esta vazia.")
 
     with open(caminho_fds, 'r', encoding='latin-1') as f:
         conteudo = f.read()
 
-    # Remove todas as linhas &MESH existentes (incluindo multi-linha)
-    conteudo_sem_meshes = _RE_MESH.sub("__MESH_PLACEHOLDER__", conteudo)
+    # Cada mesh nova deve apontar para uma entrada que realmente existe. Ao
+    # substituir uma a uma, filhas de uma divisao permanecem no ponto da mesh
+    # mae e registros intercalados (&OBST, &VENT...) nao mudam de posicao.
+    correspondencias = encontrar_namelists(conteudo, "MESH")
+    total_originais = len(correspondencias)
+    por_original: dict[int, list[Mesh]] = {}
+    for mesh in novas_meshes:
+        if mesh.id_original < 1 or mesh.id_original > total_originais:
+            raise ValueError(
+                f"Reescrita recusada: mesh referencia origem inexistente "
+                f"#{mesh.id_original}."
+            )
+        por_original.setdefault(mesh.id_original, []).append(mesh)
 
-    # Monta bloco de novas meshes
-    linhas_mesh = "\n".join(m.para_linha_fds() for m in novas_meshes)
+    faltantes = [
+        idx for idx in range(1, total_originais + 1)
+        if idx not in por_original
+    ]
+    if faltantes:
+        raise ValueError(
+            "Reescrita recusada: faltam substitutas para a(s) mesh(es) "
+            + ", ".join(f"#{idx}" for idx in faltantes)
+            + "."
+        )
 
-    # Substitui o primeiro placeholder pelo bloco completo, remove os demais
-    primeira = True
-    def substituir(match):
-        nonlocal primeira
-        if primeira:
-            primeira = False
-            return linhas_mesh
-        return ""  # remove placeholders extras
+    # Reconstrucao pelos spans do scanner: somente namelists reais sao
+    # substituidos. Texto "&MESH" comentado e barras dentro de strings ficam
+    # fora dos spans e permanecem byte a byte no restante do arquivo.
+    partes: list[str] = []
+    cursor = 0
+    for indice_original, bloco in enumerate(correspondencias, start=1):
+        partes.append(conteudo[cursor:bloco.inicio])
+        partes.append("\n".join(
+            mesh.para_linha_fds() for mesh in por_original[indice_original]
+        ))
+        cursor = bloco.fim
+    partes.append(conteudo[cursor:])
+    novo_conteudo = "".join(partes)
 
-    novo_conteudo = re.sub("__MESH_PLACEHOLDER__", substituir, conteudo_sem_meshes)
+    # O primeiro backup representa o modelo recebido do usuario e nunca deve
+    # ser sobrescrito por uma versao que o proprio programa ja modificou.
+    # Ele so e criado depois de todas as validacoes acima.
+    caminho_bak = caminho_fds + ".bak"
+    if not os.path.exists(caminho_bak):
+        shutil.copy2(caminho_fds, caminho_bak)
+        logger.info(f"  Backup original criado: {os.path.basename(caminho_bak)}")
+    else:
+        logger.info(f"  Backup original preservado: {os.path.basename(caminho_bak)}")
 
-    with open(caminho_fds, 'w', encoding='latin-1') as f:
-        f.write(novo_conteudo)
+    # Escrita atomica: uma queda no meio da gravacao deixa o .fds anterior
+    # intacto. O temporario fica no mesmo volume para os.replace ser atomico.
+    temporario = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="latin-1", newline="", delete=False,
+            dir=os.path.dirname(os.path.abspath(caminho_fds)),
+            prefix=os.path.basename(caminho_fds) + ".", suffix=".tmp",
+        ) as f:
+            temporario = f.name
+            f.write(novo_conteudo)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporario, caminho_fds)
+        temporario = None
+    finally:
+        if temporario:
+            try:
+                os.remove(temporario)
+            except OSError:
+                pass
 
     logger.info(f"  Arquivo reescrito com {len(novas_meshes)} mesh(es).")
     return caminho_bak
@@ -501,6 +823,8 @@ def processar_meshes(
     dry_run: bool = False,
     pular_se_otimizado: bool = True,
     peso_espacial: float = 0.15,
+    max_meshes_por_core: int = 4,
+    permitir_divisao: bool = False,
 ) -> int:
     """
     Orquestra leitura → divisão → reordenação → reescrita.
@@ -532,17 +856,56 @@ def processar_meshes(
     logger.info(f"  Meshes originais : {len(meshes_originais)}")
     logger.info(f"  Células originais: {sum(m.n_celulas for m in meshes_originais)}")
 
+    # MULT_ID e CATF so revelam a lista completa depois do pre-processamento
+    # interno do FDS. Alterar MPI_PROCESS com a contagem literal poderia
+    # atribuir todas as copias ao mesmo rank ou ignorar meshes auxiliares.
+    motivos_indeterminados = motivos_contagem_mesh_indeterminada(caminho_fds)
+    if motivos_indeterminados:
+        logger.warning(
+            "  Mesh Splitter ignorado por %s; arquivo original preservado.",
+            "/".join(motivos_indeterminados),
+        )
+        return len(meshes_originais)
+
+    if permitir_divisao:
+        motivos_bloqueio = _motivos_bloqueio_divisao(
+            caminho_fds, meshes_originais
+        )
+        if motivos_bloqueio:
+            logger.warning(
+                "  Divisao avancada desativada neste caso: %s. "
+                "O balanceamento sem criar interfaces continua disponivel.",
+                "; ".join(motivos_bloqueio),
+            )
+            permitir_divisao = False
+
     if pular_se_otimizado and meshes_ja_otimizadas(meshes_originais, n_cores, margem_pct):
         logger.info("  Meshes ja otimizadas para esta configuracao. Reescrita ignorada.")
         return len(meshes_originais)
 
-    # Se já tem meshes suficientes, apenas reordena
-    if len(meshes_originais) >= n_cores:
-        logger.info("  Meshes já suficientes. Apenas reordenando.")
-        novas_meshes = reordenar_meshes_por_nucleo(meshes_originais, n_cores, peso_espacial)
+    if permitir_divisao:
+        # Mesmo quando ja ha meshes suficientes, um subdominio muito maior
+        # pode justificar cortes adicionais. Cada corte cria uma nova
+        # interface numerica; por isso o fluxo principal controla esta opcao
+        # separadamente e a mantem avancada/opt-in.
+        novas_meshes = dividir_meshes(
+            meshes_originais,
+            n_cores,
+            margem_pct,
+            max_meshes_por_core=max_meshes_por_core,
+        )
     else:
-        novas_meshes = dividir_meshes(meshes_originais, n_cores, margem_pct)
-        novas_meshes = reordenar_meshes_por_nucleo(novas_meshes, n_cores, peso_espacial)
+        novas_meshes = deepcopy(meshes_originais)
+        if len(novas_meshes) < n_cores:
+            logger.warning(
+                f"  Ha {len(novas_meshes)} mesh(es) para {n_cores} processos. "
+                "A criacao de novas interfaces esta desativada; o arquivo nao "
+                "sera reescrito e o chamador deve reduzir os processos MPI."
+            )
+            return len(novas_meshes)
+        else:
+            logger.info("  Divisao de meshes desativada; apenas balanceando MPI_PROCESS.")
+    novas_meshes = reordenar_meshes_por_nucleo(novas_meshes, n_cores, peso_espacial)
 
     logger.info(f"  Meshes finais    : {len(novas_meshes)}")
     logger.info(f"  Células totais   : {sum(m.n_celulas for m in novas_meshes)}")

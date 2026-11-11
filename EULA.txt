@@ -1,0 +1,187 @@
+================================================================
+    CONTRATO DE LICENÇA DE USUÁRIO FINAL (EULA)
+    FDS AUTOMATION
+================================================================
+
+Versão do documento: 1.0 — Julho de 2026
+Software: FDS Automation (versão 1.17 e posteriores)
+
+IMPORTANTE — LEIA COM ATENÇÃO: Este Contrato de Licença de
+Usuário Final ("EULA") é um acordo legal entre o usuário (pessoa
+física ou jurídica, doravante "LICENCIADA") e JZ ENGENHARIA
+(doravante "LICENCIANTE"), autora e proprietária do software
+FDS Automation ("SOFTWARE").
+
+Ao instalar, copiar ou utilizar o SOFTWARE, a LICENCIADA declara
+ter lido, compreendido e aceitado integralmente os termos deste
+EULA. Caso não concorde com estes termos, não instale nem
+utilize o SOFTWARE.
+
+----------------------------------------------------------------
+1. PROPRIEDADE E TITULARIDADE
+----------------------------------------------------------------
+1.1. O SOFTWARE, incluindo seu código-fonte, executáveis,
+     interface, documentação, algoritmos de otimização, marca e
+     quaisquer materiais associados, é de propriedade exclusiva
+     da JZ ENGENHARIA, desenvolvido por Juliano de Souza
+     Zarinello Júnior, sendo protegido pela Lei nº 9.609/1998
+     (Lei do Software), pela Lei nº 9.610/1998 (Lei de Direitos
+     Autorais) e demais legislações aplicáveis.
+
+1.2. Este EULA NÃO constitui venda do SOFTWARE ou de qualquer
+     parte dele. A LICENCIADA adquire apenas o direito de uso
+     nos termos aqui descritos, permanecendo todos os direitos
+     de propriedade intelectual com a LICENCIANTE.
+
+----------------------------------------------------------------
+2. CONCESSÃO DE LICENÇA
+----------------------------------------------------------------
+2.1. A LICENCIANTE concede à RME CONSULTORIA & ENGENHARIA uma
+     licença de uso do SOFTWARE: não exclusiva, intransferível,
+     não sublicenciável e revogável, para utilização interna em
+     atividades profissionais de engenharia de segurança contra
+     incêndio.
+
+2.2. A licença permite a instalação e o uso do SOFTWARE em
+     computadores de propriedade da RME CONSULTORIA & ENGENHARIA
+     ou por ela utilizados na prestação de seus serviços,
+     incluindo o recurso de acompanhamento compartilhado entre
+     múltiplos computadores.
+
+2.3. Qualquer uso do SOFTWARE fora do escopo desta licença
+     (por outra empresa, para revenda, distribuição ou prestação
+     de serviços a terceiros não relacionados) depende de
+     autorização prévia, expressa e por escrito da JZ ENGENHARIA.
+
+----------------------------------------------------------------
+3. RESTRIÇÕES
+----------------------------------------------------------------
+À LICENCIADA é expressamente vedado:
+
+a) copiar, distribuir, publicar, alugar, emprestar, vender ou
+   sublicenciar o SOFTWARE, no todo ou em parte, a terceiros;
+b) realizar engenharia reversa, descompilar, desmontar ou tentar
+   de qualquer forma obter o código-fonte do SOFTWARE, exceto na
+   medida em que tal restrição seja vedada por lei;
+c) modificar, adaptar, traduzir ou criar obras derivadas do
+   SOFTWARE sem autorização escrita da LICENCIANTE;
+d) remover, ocultar ou alterar avisos de propriedade intelectual,
+   marcas ou identificações do SOFTWARE;
+e) utilizar o SOFTWARE de forma contrária à legislação vigente.
+
+----------------------------------------------------------------
+4. COMPONENTES DE TERCEIROS
+----------------------------------------------------------------
+4.1. O SOFTWARE automatiza a execução do Fire Dynamics Simulator
+     (FDS) e do Smokeview, desenvolvidos pelo NIST (National
+     Institute of Standards and Technology, EUA) e distribuídos
+     como domínio público. O FDS e o Smokeview NÃO são de
+     propriedade da JZ ENGENHARIA, NÃO são distribuídos com o
+     SOFTWARE e devem ser obtidos e instalados pela LICENCIADA
+     diretamente das fontes oficiais (NIST/PyroSim).
+
+4.2. O SOFTWARE incorpora bibliotecas de código aberto (Python,
+     PyYAML, psutil, py-cpuinfo, openpyxl, entre outras), cada
+     qual regida por sua própria licença, que permanecem válidas
+     e aplicáveis aos respectivos componentes.
+
+----------------------------------------------------------------
+5. RESPONSABILIDADE TÉCNICA E RESULTADOS DE SIMULAÇÃO
+----------------------------------------------------------------
+5.1. O SOFTWARE é uma ferramenta de AUTOMAÇÃO E OTIMIZAÇÃO DE
+     EXECUÇÃO de simulações. Ele NÃO altera a física dos modelos,
+     mas pode reorganizar a divisão de malhas (meshes) para fins
+     de desempenho, mantendo o domínio computacional e o tamanho
+     de célula definidos pelo engenheiro.
+
+5.2. A modelagem, os parâmetros de entrada, a verificação, a
+     validação e a interpretação dos resultados das simulações
+     são de exclusiva responsabilidade do engenheiro responsável
+     técnico que as utiliza. O uso do SOFTWARE NÃO substitui o
+     julgamento profissional nem transfere à LICENCIANTE
+     qualquer responsabilidade técnica sobre projetos, laudos,
+     pareceres ou decisões de engenharia baseados nos resultados.
+
+5.3. Recomenda-se que a LICENCIADA verifique os arquivos de
+     saída do FDS (incluindo o backup .fds.bak gerado antes de
+     qualquer modificação automática de malha) e valide os
+     resultados conforme as boas práticas e normas aplicáveis.
+
+----------------------------------------------------------------
+6. GARANTIAS E LIMITAÇÃO DE RESPONSABILIDADE
+----------------------------------------------------------------
+6.1. O SOFTWARE é fornecido "NO ESTADO EM QUE SE ENCONTRA"
+     ("AS IS"), sem garantias de qualquer natureza, expressas ou
+     implícitas, incluindo, sem limitação, garantias de
+     adequação a um propósito específico, desempenho contínuo ou
+     ausência de erros.
+
+6.2. Em nenhuma hipótese a LICENCIANTE será responsável por
+     danos diretos, indiretos, incidentais, lucros cessantes,
+     perda de dados, interrupção de atividades ou quaisquer
+     prejuízos decorrentes do uso ou da impossibilidade de uso
+     do SOFTWARE, ainda que advertida da possibilidade de tais
+     danos.
+
+6.3. A LICENCIADA é responsável por manter cópias de segurança
+     de seus arquivos de simulação e dados.
+
+----------------------------------------------------------------
+7. ATUALIZAÇÕES E SUPORTE
+----------------------------------------------------------------
+7.1. A LICENCIANTE poderá, a seu exclusivo critério, fornecer
+     atualizações, correções ou novas versões do SOFTWARE, que
+     ficarão sujeitas a este mesmo EULA, salvo se acompanhadas
+     de novo contrato.
+
+7.2. Suporte técnico, treinamento e customizações poderão ser
+     objeto de acordo específico entre as partes.
+
+----------------------------------------------------------------
+8. VIGÊNCIA E RESCISÃO
+----------------------------------------------------------------
+8.1. Esta licença vigora por prazo indeterminado a partir da
+     instalação do SOFTWARE.
+
+8.2. A licença será automaticamente rescindida, sem necessidade
+     de notificação, em caso de descumprimento de qualquer
+     cláusula deste EULA. Na rescisão, a LICENCIADA deverá
+     cessar o uso e desinstalar o SOFTWARE de todos os
+     computadores.
+
+8.3. As cláusulas 1, 3, 5 e 6 permanecem válidas mesmo após o
+     término desta licença.
+
+----------------------------------------------------------------
+9. DISPOSIÇÕES GERAIS
+----------------------------------------------------------------
+9.1. Este EULA constitui o acordo integral entre as partes
+     quanto ao objeto aqui tratado e substitui entendimentos
+     anteriores, verbais ou escritos.
+
+9.2. A tolerância quanto ao descumprimento de qualquer cláusula
+     não constitui renúncia ou novação.
+
+9.3. Este EULA é regido pelas leis da República Federativa do
+     Brasil. Fica eleito o foro da comarca da sede da
+     JZ ENGENHARIA para dirimir quaisquer controvérsias
+     decorrentes deste contrato, com renúncia a qualquer outro,
+     por mais privilegiado que seja.
+
+----------------------------------------------------------------
+
+FDS Automation © 2026 JZ Engenharia. Todos os direitos
+reservados.
+
+Desenvolvido por: Juliano de Souza Zarinello Júnior
+Licenciado para uso na: RME Consultoria & Engenharia
+
+Contato para autorizações e licenciamento:
+JZ Engenharia — juninhozarinello@gmail.com
+
+================================================================
+NOTA: Este documento é um modelo de contrato de licença. Para
+plena validade e adequação jurídica, recomenda-se revisão por
+advogado, incluindo o preenchimento de dados como CNPJ e
+endereço das partes, se aplicável.
+================================================================

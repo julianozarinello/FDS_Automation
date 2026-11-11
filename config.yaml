@@ -1,5 +1,5 @@
 # ============================================================
-#  FDS Automation v1.15 — Painel de Controle
+#  FDS Automation v1.18 — Painel de Controle
 # ============================================================
 
 # ----------------------------------------------------------
@@ -51,17 +51,32 @@ hybrid:
   omp_threads: 5
 
 # ----------------------------------------------------------
+# CPU HÍBRIDA (P-core / E-core)
+# Em CPUs Intel 12a gen+ com núcleos de performance e eficiência,
+# o auto_config usa por padrão apenas os P-cores (mais rápidos para
+# o FDS). Mude para true para contar também os E-cores.
+# ----------------------------------------------------------
+hybrid_cpu:
+  usar_e_cores: false
+
+# ----------------------------------------------------------
 # MESH SPLITTER
-# Divide e reordena meshes automaticamente antes de rodar.
+# Balanceia MPI_PROCESS sem mudar a ordem das meshes.
+# A divisao geometrica e uma opcao avancada separada.
 # Ativo apenas nos modos MPI e HYBRID.
 # O arquivo original é preservado em um backup (.fds.bak).
 # ----------------------------------------------------------
 mesh_splitter:
-  ativo:      true   # mude para true para ativar
+  ativo:      true
   margem_pct: 7.0     # % máximo de desequilíbrio de células entre núcleos
   dry_run:    false    # true = apenas loga, NÃO modifica o arquivo
   pular_se_otimizado: true # true = nao reescreve se MPI_PROCESS ja estiver balanceado
-  peso_espacial: 0.15      # 0 = so carga; maior = aproxima meshes vizinhas no mesmo MPI
+  # Criar novas interfaces entre meshes pode alterar levemente o resultado
+  # numerico. Por seguranca fica desligado; ative apenas com validacao de
+  # engenharia do caso original x otimizado.
+  permitir_divisao: false
+  max_meshes_por_core: 4   # limite conservador quando permitir_divisao=true
+  peso_espacial: 0.15      # mantido por compatibilidade; a ordem agora e preservada
 
 # ----------------------------------------------------------
 # PERFORMANCE
@@ -71,6 +86,19 @@ performance:
   kmp_affinity: true   # Fixa threads a núcleos físicos
   omp_spin:     true   # Threads em spin-wait (menos latência)
   numa_opt:     true   # Otimização NUMA (CPUs multi-socket)
+  fixar_afinidade_os: true # Fixa prioridade ALTA e afinidade de CPU
+                            # diretamente nos processos fds.exe (o Windows
+                            # nao propaga isso do mpiexec para os ranks).
+                            # Em CPU hibrida, mantem o FDS fora dos E-cores.
+                            # v1.17+: em MPI/HYBRID os nucleos sao divididos
+                            # em fatias, uma por rank (nao mais todos para
+                            # todos, que desfazia o pinning do Intel MPI).
+  omp_stacksize: "16M"      # Pilha defensiva por thread OpenMP.
+  mkl_threads: 0             # 0 = automatico: 1 em MPI puro e o mesmo
+                             # numero de threads do modo nos demais casos.
+  mpi_shm: true             # Intel MPI 100% em memoria compartilhada
+                            # (maquina unica). Use false apenas se rodar
+                            # em cluster com mais de um computador.
 
 # ----------------------------------------------------------
 # AUTO-BENCHMARK
@@ -81,14 +109,14 @@ performance:
 auto_benchmark:
   ativo: false
   tempo_max_seg: 45
-  modos: ["OPENMP", "MPI", "HYBRID"]
+  modos: ["SERIAL", "OPENMP", "MPI", "HYBRID"]
 
 # ----------------------------------------------------------
 # OTIMIZADOR EMPIRICO
 # Testa configuracoes curtas em copia temporaria, mede o
 # avanco real pelo Time Step do FDS e usa cache por caso/hardware.
-# Nao muda a fisica do modelo; altera apenas paralelismo e
-# distribuicao MPI_PROCESS das meshes.
+# No padrao seguro altera apenas paralelismo e MPI_PROCESS.
+# Criar novas interfaces depende de permitir_divisao=true.
 # ----------------------------------------------------------
 otimizador:
   ativo: true
@@ -97,11 +125,59 @@ otimizador:
   melhoria_min_pct: 3.0
   usar_cache: true
   cache_max_entradas: 100
-  testar_modos: ["OPENMP", "MPI", "HYBRID"]
-  testar_peso_espacial: [0.0, 0.10, 0.15, 0.25]
+  testar_modos: ["SERIAL", "OPENMP", "MPI", "HYBRID"]
+  # A ordem de &MESH e preservada; variacoes antigas deste peso nao sao mais
+  # testadas porque nao mudariam a distribuicao segura.
+  testar_peso_espacial: [0.15]
+  # 2, 4 e o total ja sao testados. true acrescenta valores intermediarios.
   testar_threads_openmp: false
   copiar_arquivos_auxiliares: true
   copiar_arquivos_ate_mb: 250
+
+# ----------------------------------------------------------
+# FIREWALL DO WINDOWS
+# O Windows pergunta "Deseja permitir que este aplicativo se
+# comunique?" para cada executavel FDS/MPI em cada pasta nova.
+# Com auto_liberar: true o programa cadastra as liberacoes
+# automaticamente (em silencio se rodando como administrador;
+# senao, o menu tem a opcao "Parar as perguntas do Windows",
+# que pede permissao UMA unica vez).
+# ----------------------------------------------------------
+firewall:
+  auto_liberar: true
+
+# ----------------------------------------------------------
+# FILA DINAMICA
+# Com a fila JA RODANDO, novas subpastas com .fds adicionadas
+# a pasta principal sao detectadas automaticamente (a pasta e
+# re-escaneada ao fim de cada simulacao) e entram no FINAL da
+# fila. 'otimizar_novas' faz o otimizador descobrir a melhor
+# configuracao para essas simulacoes novas antes de rodar,
+# mesmo que a fila tenha comecado sem otimizador.
+# ----------------------------------------------------------
+fila_dinamica:
+  ativo: true
+  otimizar_novas: true
+  idade_min_seg: 10   # ignora .fds modificados ha menos de N s (copia em andamento)
+
+# ----------------------------------------------------------
+# MONITORAMENTO EM PLANILHA COMPARTILHADA (.xlsx)
+# Atualiza uma planilha com o andamento das simulacoes deste
+# PC: rodando, concluida, erro (e qual erro), progresso e ETA.
+# Aponte 'arquivo_xlsx' para um arquivo dentro de uma pasta
+# sincronizada (Google Drive para Desktop, OneDrive ou rede) e
+# a equipe inteira acompanha todos os PCs na mesma planilha —
+# cada PC atualiza apenas as proprias linhas.
+# A aba "Acompanhamento" da interface grafica preenche esta
+# secao automaticamente.
+# ----------------------------------------------------------
+monitoramento:
+  ativo: false
+  arquivo_xlsx: ""
+  usuario: ""
+  empresa: ""
+  pc: ""
+  intervalo_seg: 60
 
 # ----------------------------------------------------------
 # INTERFACE DO CONSOLE
